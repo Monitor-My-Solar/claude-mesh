@@ -31,9 +31,10 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 
   claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
   claude-mesh relay                              run this machine's relay daemon
-  claude-mesh peers [--group G]                  who is online
+  claude-mesh peers [--group G]                  who is online (all groups by default)
   claude-mesh local                              live sessions on this machine
-  claude-mesh send --to NAME --body TEXT [--intent request|inform|reply-needed|fyi] [--re ID]
+  claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID]
+                                 address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
 
 Config precedence: env (MESH_*) > ~/.claude-mesh/config.json > defaults.`;
@@ -124,26 +125,46 @@ async function main() {
   }
 
   if (cmd === 'peers') {
-    const g = arg(rest, '--group', conf.group);
-    const { peers } = await api(`/peers?group=${encodeURIComponent(g)}`, conf);
-    if (!peers.length) return console.log('(no peers online)');
-    for (const p of peers) console.log(`${p.name}\t${p.group}\t${p.host}\t${p.cwd || '-'}`);
+    const g = arg(rest, '--group');          // no filter unless asked
+    const { peers } = await api(`/peers${g ? `?group=${encodeURIComponent(g)}` : ''}`, conf);
+    if (!peers.length) return console.log(g ? `(no peers in group '${g}')` : '(no peers online)');
+    const byGroup = new Map();
+    for (const p of peers) {
+      if (!byGroup.has(p.group)) byGroup.set(p.group, []);
+      byGroup.get(p.group).push(p);
+    }
+    for (const [group, list] of [...byGroup].sort()) {
+      console.log(`\n${group}`);
+      for (const p of list) {
+        const age = Math.round((Date.now() - p.seen) / 1000);
+        console.log(`  ${p.name.replace(/^.*\//, '').padEnd(24)} ${(p.cwd || '-').padEnd(30)} ${age}s ago`);
+      }
+    }
+    console.log(`\nAddress a peer as group/name, e.g. claude-mesh send --to ${peers[0].group}/${peers[0].name.replace(/^.*\//, '')} --body "..."`);
     return;
   }
 
   if (cmd === 'send') {
     const to = arg(rest, '--to'), body = arg(rest, '--body');
     if (!to || !body) { console.error('usage: claude-mesh send --to NAME --body TEXT'); process.exit(1); }
-    const j = await api('/send', conf, {
+    let j;
+    try {
+      j = await api('/send', conf, {
       method: 'POST',
       body: JSON.stringify({
         to, body,
-        from:   arg(rest, '--from', conf.name || `${conf.relayId}/${process.pid}`),
-        intent: arg(rest, '--intent', 'inform'),
-        re:     arg(rest, '--re', ''),
-        group:  arg(rest, '--group', conf.group),
+        from:    arg(rest, '--from', conf.name || `${conf.group}/${process.pid}`),
+        intent:  arg(rest, '--intent', 'inform'),
+        re:      arg(rest, '--re', ''),
+        group:   conf.group,                    // sender's group
+        toGroup: arg(rest, '--group', ''),      // optional recipient group
       }),
-    });
+      });
+    } catch (e) {
+      console.error(`claude-mesh: ${e.message}`);
+      console.error("run 'claude-mesh peers' to see who is online");
+      process.exit(1);
+    }
     return console.log(`queued ${j.id} -> ${to}`);
   }
 

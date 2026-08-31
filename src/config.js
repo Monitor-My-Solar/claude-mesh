@@ -20,7 +20,10 @@ function load() {
     registry: process.env.MESH_REGISTRY || file.registry || 'http://127.0.0.1:8787',
     token:    process.env.MESH_TOKEN    || file.token    || '',
     relayId:  process.env.MESH_RELAY_ID || file.relayId  || os.hostname(),
-    group:    process.env.MESH_GROUP    || file.group    || 'default',
+    // A group is a place, so it defaults to this machine. Sessions on the mac
+    // mini land in "macmini" without anyone configuring it.
+    group:    process.env.MESH_GROUP    || file.group    ||
+              (process.env.MESH_RELAY_ID || file.relayId || os.hostname()).toLowerCase(),
     name:     process.env.MESH_NAME     || file.name     || '',
   };
 }

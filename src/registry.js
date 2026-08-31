@@ -9,6 +9,34 @@
 const http = require('http');
 const { randomUUID, timingSafeEqual } = require('crypto');
 
+/**
+ * Resolve a recipient. Accepts a fully-qualified "group/name", a bare name when
+ * it is unambiguous mesh-wide, or a name plus an explicit group. Ambiguity is
+ * an error rather than a guess: delivering into the wrong session is worse than
+ * refusing to deliver.
+ */
+function resolveTarget(peers, to, toGroup) {
+  if (peers.has(to)) return { name: to };
+
+  const all = [...peers.values()];
+  const byGroupName = (g, n) => all.filter((p) => p.group === g && (p.name === n || p.name.endsWith(`/${n}`)));
+
+  if (to.includes('/')) {
+    const [g, ...restParts] = to.split('/');
+    const n = restParts.join('/');
+    const hits = byGroupName(g, n);
+    if (hits.length === 1) return { name: hits[0].name };
+    if (hits.length > 1) return { error: `ambiguous '${to}'`, candidates: hits.map((p) => p.name) };
+  }
+
+  const pool = toGroup ? all.filter((p) => p.group === toGroup) : all;
+  const hits = pool.filter((p) => p.name === to || p.name.endsWith(`/${to}`));
+  if (hits.length === 1) return { name: hits[0].name };
+  if (hits.length > 1) return { error: `ambiguous '${to}' - qualify it as group/name`, candidates: hits.map((p) => p.name) };
+
+  return { error: `unknown peer '${to}'`, known: all.map((p) => `${p.group}/${p.name}`) };
+}
+
 /** Constant-time string compare, so the token can't be recovered by timing. */
 function safeEqual(a, b) {
   const x = Buffer.from(String(a ?? ''));
@@ -61,6 +89,8 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
       if (url.pathname === '/peers') {
         prune();
+        // No group filter by default: the mesh is one directory, and `group`
+        // says WHERE a session lives (which machine), not who may see it.
         const group = q.get('group');
         return reply(200, {
           peers: [...peers.values()]
@@ -152,16 +182,19 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           const body = String(d.body || '').slice(0, MAX_BODY);
           if (!to || !body) return reply(400, { error: 'to and body required' });
           prune();
-          if (!peers.has(to)) return reply(404, { error: `unknown peer '${to}'` });
-          const qq = bank.get(to) || [];
+
+          const resolved = resolveTarget(peers, to, d.toGroup);
+          if (resolved.error) return reply(404, resolved);
+          const target = resolved.name;
+          const qq = bank.get(target) || [];
           if (qq.length >= MAX_BANK) return reply(429, { error: 'recipient bank full' });
           const msg = {
             id: randomUUID().slice(0, 12),
-            to, from: d.from || 'unknown', group: d.group || 'default',
+            to: target, from: d.from || 'unknown', group: d.group || 'default',
             intent: d.intent || 'inform', re: d.re || '',
             body, ts: Date.now(),
           };
-          qq.push(msg); bank.set(to, qq); wake();
+          qq.push(msg); bank.set(target, qq); wake();
           return reply(200, { ok: true, id: msg.id });
         }
         return reply(404, { error: 'not found' });
