@@ -25,6 +25,22 @@ async function api(path, conf, opts = {}) {
   return body;
 }
 
+/**
+ * This session's mesh address, derived from its inbox socket. Sessions register
+ * under their name (which follows /rename), so a pid-derived address never
+ * resolves - and the recipient gets a REPLY line it cannot use.
+ */
+function selfAddress(conf) {
+  if (conf.name) return conf.name;
+  const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
+  if (!sock) return '';
+  try {
+    const me = require('../src/discover.js').localSessions().find((x) => x.socket === sock);
+    if (me?.slug) return `${conf.group}/${me.slug}`;
+  } catch {}
+  return '';
+}
+
 /** Print a failed address alongside who is actually reachable. */
 function reportUnreachable(e) {
   console.error(`claude-mesh: ${e.message}`);
@@ -354,9 +370,7 @@ async function main() {
     // Default --from to THIS session's registered name, derived from the inbox
     // socket, so a reply address is always resolvable. Guessing a label (or
     // using a stale pid from an earlier session) yields an unaddressable REPLY.
-    const selfSock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
-    const selfPid  = selfSock.match(/(\d+)\.sock$/)?.[1];
-    const selfName = conf.name || (selfPid ? `${conf.group}/${selfPid}` : '');
+    const selfName = selfAddress(conf);
     if (!to || !body) { console.error('usage: claude-mesh send --to NAME --body TEXT'); process.exit(1); }
     let j;
     try {
@@ -364,7 +378,7 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({
         to, body,
-        from:    arg(rest, '--from', selfName || 'unknown'),
+        from:    arg(rest, '--from', selfName || `${conf.group}/cli`),
         intent:  arg(rest, '--intent', 'inform'),
         re:      arg(rest, '--re', ''),
         group:   conf.group,                    // sender's group
@@ -395,10 +409,7 @@ async function main() {
     const to = arg(rest, '--to'), body = arg(rest, '--body');
     if (!to || !body) { console.error('usage: claude-mesh ask --to NAME --body TEXT [--wait SECS]'); process.exit(1); }
     const secs = Number(arg(rest, '--wait', '120'));
-    const selfSock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
-    const selfPid  = selfSock.match(/(\d+)\.sock$/)?.[1];
-    const me = require('../src/discover.js').localSessions().find((x) => x.socket === selfSock);
-    const selfName = conf.name || me?.slug || (selfPid ? String(selfPid) : '');
+    const selfName = selfAddress(conf);
 
     let j;
     try {

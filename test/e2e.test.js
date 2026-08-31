@@ -89,7 +89,7 @@ test('the REPLY line names an address that actually resolves', async () => {
     const known = peers.some((p) => `${p.group}/${p.name}` === to || p.name === to.split('/').pop());
     assert.ok(known, `REPLY names '${to}', which is not a registered peer`);
   } else {
-    assert.ok(line.includes('not a registered peer'),
+    assert.ok(line.includes('no session to reply to'),
       'if there is no resolvable address, say so rather than printing a broken command');
   }
 });

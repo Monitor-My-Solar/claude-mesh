@@ -131,8 +131,12 @@ function envelopeFor(m) {
     `FROM: ${m.from}${m.fromAddr && m.fromAddr !== m.from ? ` (${m.fromAddr})` : ''}`,
     `INTENT: ${m.intent}`,
     ...(m.re ? [`RE: ${m.re}`] : []),
-    ...(m.fromAddr ? [`REPLY: claude-mesh send --to ${replyTo} --re ${m.id}`]
-                   : ['REPLY: (sender is not a registered peer; run `claude-mesh peers`)']),
+    // Only print a REPLY command that will actually work. A send from a plain
+    // shell has no session to reply to, and printing a broken command sends
+    // the recipient chasing an address that cannot resolve.
+    ...(m.fromAddr
+      ? [`REPLY: claude-mesh send --to ${replyTo} --re ${m.id}`]
+      : ['REPLY: (this sender has no session to reply to - answer your own user instead)']),
   ].join('\n');
   return `${head}\n\n${m.body}`;
 }
