@@ -51,20 +51,34 @@ async function main() {
       return console.log(`removed ${r.removed} mesh hook(s) from ${r.settingsPath}`);
     }
     const ip   = arg(rest, '--ip');
-    const port = arg(rest, '--port', '8787');
+    const port = arg(rest, '--port');
     const token = has(rest, '--gen-token') ? randomBytes(32).toString('hex') : arg(rest, '--token');
     const patch = {};
-    if (ip)    patch.registry = /^https?:\/\//.test(ip) ? ip : `http://${ip}:${port}`;
+    if (ip) {
+      if (/^https?:\/\//.test(ip)) {
+        patch.registry = ip.replace(/\/+$/, '');
+        if (port) console.warn(`note: --port ${port} ignored; --ip is a full URL`);
+      } else {
+        patch.registry = `http://${ip}:${port || 8787}`;
+      }
+    }
     if (token) patch.token = token;
     const g = arg(rest, '--group'); if (g) patch.group = g;
     const n = arg(rest, '--name');  if (n) patch.name = n;
     const rid = arg(rest, '--relay-id'); if (rid) patch.relayId = rid;
 
-    const saved = cfg.save(patch);
+    cfg.save(patch);
+    const saved = cfg.load();          // show resolved values, not just the patch
     console.log(`config  ${cfg.FILE}`);
     console.log(`registry ${saved.registry}`);
     console.log(`token    ${saved.token ? saved.token.slice(0, 8) + '… (' + saved.token.length + ' chars)' : 'NONE — registry will refuse to start'}`);
     if (has(rest, '--gen-token')) console.log(`\nFULL TOKEN (use on every machine + the server):\n  ${saved.token}\n`);
+
+    if (!saved.token) {
+      console.error('\nWARNING: no token set. Every request will be refused (401).');
+      console.error('Set the shared token from your registry:');
+      console.error('  claude-mesh configure --token <token>\n');
+    }
 
     if (!has(rest, '--no-hooks')) {
       const r = require('../src/install.js').install();

@@ -40,10 +40,16 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   };
 
   const server = http.createServer((req, res) => {
+    const started = Date.now();
     const reply = (code, obj) => {
       const b = Buffer.from(JSON.stringify(obj));
       res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': b.length });
       res.end(b);
+      // Log every request: without this a client that never arrives and a client
+      // that is rejected look identical from the server side.
+      const who = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '?';
+      if (!(code === 200 && req.url.startsWith('/inbox')))
+        console.log(`${code} ${req.method} ${req.url.split('?')[0]} from ${who} (${Date.now() - started}ms)`);
     };
     if (token && !safeEqual(req.headers['x-mesh-token'], token)) return reply(401, { error: 'bad token' });
 
