@@ -110,7 +110,8 @@ function installService({ dryRun = false } = {}) {
       fs.writeFileSync(file, plist);
     }
     return { platform: 'darwin', file, label,
-             start: `launchctl unload ${file} 2>/dev/null; launchctl load -w ${file}` };
+             reload: [`launchctl unload ${file} 2>/dev/null || true`,
+                      `launchctl load -w ${file}`] };
   }
 
   const dir = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -133,7 +134,21 @@ WantedBy=default.target
     fs.writeFileSync(file, unit);
   }
   return { platform: 'linux', file,
-           start: 'systemctl --user daemon-reload && systemctl --user enable --now claude-mesh-relay' };
+           reload: ['systemctl --user daemon-reload',
+                    'systemctl --user enable --now claude-mesh-relay',
+                    'systemctl --user restart claude-mesh-relay'] };
 }
 
-module.exports = { install, uninstall, installService, installSkill, SETTINGS };
+/** Write the service file and (re)start it, so an upgrade needs no ceremony. */
+function applyService() {
+  const r = installService();
+  const { execSync } = require('child_process');
+  const ran = [];
+  for (const cmd of r.reload || []) {
+    try { execSync(cmd, { stdio: 'ignore' }); ran.push(cmd); }
+    catch { /* report below rather than failing the whole install */ }
+  }
+  return { ...r, ran, ok: ran.length === (r.reload || []).length };
+}
+
+module.exports = { install, uninstall, installService, applyService, installSkill, SETTINGS };

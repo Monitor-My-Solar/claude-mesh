@@ -71,8 +71,9 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 
   claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
   claude-mesh relay                              run this machine's relay daemon
-  claude-mesh service                            install the relay as a user service
-                                                 (systemd --user / launchd)
+  claude-mesh service                            install + start the relay service
+  claude-mesh upgrade                            refresh skill, hooks and service
+                                                 after an npm update (keeps config)
   claude-mesh peers [--group G]                  who is online (all groups by default)
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
@@ -144,11 +145,26 @@ async function main() {
   }
 
   if (cmd === 'service') {
-    const r = require('../src/install.js').installService();
+    const r = require('../src/install.js').applyService();
     console.log(`wrote ${r.file}`);
-    console.log('\nenable it with:\n  ' + r.start);
+    console.log(r.ok ? 'service installed and started.'
+                     : 'service file written, but starting it failed; run manually:\n  ' +
+                       (r.reload || []).join('\n  '));
     if (r.platform === 'linux')
-      console.log('\nto survive logout:  sudo loginctl enable-linger $USER');
+      console.log('to survive logout:  sudo loginctl enable-linger $USER');
+    return;
+  }
+
+  if (cmd === 'upgrade') {
+    // Refresh everything that ships with the package, reusing existing config.
+    const inst = require('../src/install.js');
+    const sk = inst.installSkill();
+    console.log(`skill  -> ${sk.dst}`);
+    inst.install();
+    console.log(`hooks  -> ${inst.SETTINGS}`);
+    const sv = inst.applyService();
+    console.log(`service-> ${sv.file}${sv.ok ? ' (restarted)' : ' (start it manually)'}`);
+    console.log(`config   ${cfg.FILE} (unchanged: ${conf.registry})`);
     return;
   }
 

@@ -49,9 +49,40 @@ Or run it under systemd; see `docs/deploy.md`.
 ### Each machine with Claude sessions
 
 ```bash
-claude-mesh configure --ip https://mesh.example.com --token <shared-token> --group homelab
-claude-mesh relay &
+claude-mesh configure --ip https://mesh.example.com --token <shared-token>
+claude-mesh service
 ```
+
+`configure` writes `~/.claude-mesh/config.json`, installs the SessionStart /
+SessionEnd hooks and the `/mesh` skill. `service` installs the relay as a
+systemd user unit or launchd agent and starts it, so the machine stays
+reachable across reboots. A machine whose relay is not running is invisible
+to the mesh.
+
+### Upgrading
+
+```bash
+npm install -g git+https://github.com/Monitor-My-Solar/claude-mesh.git
+claude-mesh upgrade
+```
+
+`upgrade` refreshes the skill, hooks and service and restarts the relay,
+**keeping your existing registry URL and token** - you never re-enter those.
+(If your npm allows install scripts this happens automatically on install;
+many setups block them, so `upgrade` is the reliable path.)
+
+### Naming a session
+
+A session's address is `group/name`, and names default to the working
+directory - so every session in one repo collides. Name a session for its job
+from inside it:
+
+```
+/rename app-lead
+```
+
+The mesh picks it up within ~15s. Deliberately named sessions are marked `*`
+in `claude-mesh peers` and sorted first.
 
 `--ip` takes a bare host (with optional `--port`) or a full URL, so a TLS-terminating
 reverse proxy needs no other change.
