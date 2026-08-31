@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+'use strict';
+/** claude-mesh — inter-agent messaging for Claude Code sessions. */
+const os = require('os');
+const { randomBytes } = require('crypto');
+const cfg = require('../src/config.js');
+const { localSessions } = require('../src/discover.js');
+const { deliver } = require('../src/peer.js');
+
+function arg(a, n, d) { const i = a.indexOf(n); return i === -1 ? d : a[i + 1]; }
+function has(a, n) { return a.includes(n); }
+
+async function api(path, conf, opts = {}) {
+  const res = await fetch(conf.registry + path, {
+    headers: { 'Content-Type': 'application/json', ...(conf.token ? { 'X-Mesh-Token': conf.token } : {}) },
+    ...opts,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `${res.status} ${path}`);
+  return body;
+}
+
+const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
+
+  claude-mesh configure [--ip HOST] [--port N] [--token T] [--group G] [--name N]
+                                 write ~/.claude-mesh/config.json and install the
+                                 SessionStart/SessionEnd hooks into Claude Code
+      --gen-token                generate a fresh 32-byte token
+      --no-hooks                 config only, don't touch settings.json
+      --uninstall                remove the mesh hooks again
+
+  claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
+  claude-mesh relay                              run this machine's relay daemon
+  claude-mesh peers [--group G]                  who is online
+  claude-mesh local                              live sessions on this machine
+  claude-mesh send --to NAME --body TEXT [--intent request|inform|reply-needed|fyi] [--re ID]
+  claude-mesh status                             show resolved config
+
+Config precedence: env (MESH_*) > ~/.claude-mesh/config.json > defaults.`;
+
+async function main() {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const conf = cfg.load();
+
+  if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help' || has(rest, '--help'))
+    return console.log(HELP);
+
+  if (cmd === 'configure') {
+    if (has(rest, '--uninstall')) {
+      const r = require('../src/install.js').uninstall();
+      return console.log(`removed ${r.removed} mesh hook(s) from ${r.settingsPath}`);
+    }
+    const ip   = arg(rest, '--ip');
+    const port = arg(rest, '--port', '8787');
+    const token = has(rest, '--gen-token') ? randomBytes(32).toString('hex') : arg(rest, '--token');
+    const patch = {};
+    if (ip)    patch.registry = /^https?:\/\//.test(ip) ? ip : `http://${ip}:${port}`;
+    if (token) patch.token = token;
+    const g = arg(rest, '--group'); if (g) patch.group = g;
+    const n = arg(rest, '--name');  if (n) patch.name = n;
+    const rid = arg(rest, '--relay-id'); if (rid) patch.relayId = rid;
+
+    const saved = cfg.save(patch);
+    console.log(`config  ${cfg.FILE}`);
+    console.log(`registry ${saved.registry}`);
+    console.log(`token    ${saved.token ? saved.token.slice(0, 8) + '… (' + saved.token.length + ' chars)' : 'NONE — registry will refuse to start'}`);
+    if (has(rest, '--gen-token')) console.log(`\nFULL TOKEN (use on every machine + the server):\n  ${saved.token}\n`);
+
+    if (!has(rest, '--no-hooks')) {
+      const r = require('../src/install.js').install();
+      console.log(`hooks installed into ${r.settingsPath} (backup: .mesh-backup)`);
+      console.log('New sessions will register automatically; existing ones on next start.');
+    }
+    return;
+  }
+
+  if (cmd === 'status') {
+    console.log(`registry ${conf.registry}`);
+    console.log(`token    ${conf.token ? conf.token.slice(0, 8) + '…' : '(none)'}`);
+    console.log(`relayId  ${conf.relayId}`);
+    console.log(`group    ${conf.group}`);
+    try { const h = await api('/health', conf); console.log(`server   reachable, ${h.peers} peer(s)`); }
+    catch (e) { console.log(`server   UNREACHABLE (${e.message})`); }
+    return;
+  }
+
+  if (cmd === 'serve') {
+    process.env.MESH_TOKEN = conf.token;
+    if (arg(rest, '--port')) process.env.MESH_PORT = arg(rest, '--port');
+    if (arg(rest, '--bind')) process.env.MESH_BIND = arg(rest, '--bind');
+    const { createRegistry } = require('../src/registry.js');
+    const port = Number(process.env.MESH_PORT || 8787);
+    const host = process.env.MESH_BIND || '0.0.0.0';
+    return createRegistry().listen(port, host,
+      () => console.log(`claude-mesh registry ${host}:${port} (auth on)`));
+  }
+
+  if (cmd === 'relay') {
+    process.env.MESH_REGISTRY = conf.registry;
+    process.env.MESH_TOKEN = conf.token;
+    process.env.MESH_RELAY_ID = conf.relayId;
+    process.env.MESH_GROUP = conf.group;
+    return require('../src/relay.js');
+  }
+
+  if (cmd === 'local') {
+    for (const s of localSessions())
+      console.log(`${conf.relayId}/${s.pid}\t${s.socket}${s.self ? '\t(this session)' : ''}`);
+    return;
+  }
+
+  if (cmd === 'peers') {
+    const g = arg(rest, '--group', conf.group);
+    const { peers } = await api(`/peers?group=${encodeURIComponent(g)}`, conf);
+    if (!peers.length) return console.log('(no peers online)');
+    for (const p of peers) console.log(`${p.name}\t${p.group}\t${p.host}\t${p.cwd || '-'}`);
+    return;
+  }
+
+  if (cmd === 'send') {
+    const to = arg(rest, '--to'), body = arg(rest, '--body');
+    if (!to || !body) { console.error('usage: claude-mesh send --to NAME --body TEXT'); process.exit(1); }
+    const j = await api('/send', conf, {
+      method: 'POST',
+      body: JSON.stringify({
+        to, body,
+        from:   arg(rest, '--from', conf.name || `${conf.relayId}/${process.pid}`),
+        intent: arg(rest, '--intent', 'inform'),
+        re:     arg(rest, '--re', ''),
+        group:  arg(rest, '--group', conf.group),
+      }),
+    });
+    return console.log(`queued ${j.id} -> ${to}`);
+  }
+
+  console.error(`unknown command '${cmd}'\n`); console.log(HELP); process.exit(1);
+}
+
+main().catch((e) => { console.error('claude-mesh:', e.message); process.exit(1); });

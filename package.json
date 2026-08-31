@@ -1,0 +1,17 @@
+{
+  "name": "claude-mesh",
+  "version": "0.1.0",
+  "description": "LAN inter-agent messaging for Claude Code sessions - account-agnostic, cross-machine, no per-message model cost",
+  "bin": { "claude-mesh": "./bin/claude-mesh" },
+  "main": "src/peer.js",
+  "scripts": {
+    "serve": "node bin/claude-mesh serve",
+    "relay": "node bin/claude-mesh relay",
+    "test": "node test/smoke.js"
+  },
+  "keywords": ["claude", "claude-code", "agents", "messaging", "mesh", "lan"],
+  "repository": { "type": "git", "url": "git+https://github.com/Monitor-My-Solar/claude-mesh.git" },
+  "engines": { "node": ">=18" },
+  "license": "MIT",
+  "files": ["bin", "src", "hooks", "README.md", "LICENSE"]
+}
