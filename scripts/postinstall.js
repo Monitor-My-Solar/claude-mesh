@@ -11,7 +11,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// This runs from wherever npm staged the package, which for a git install is a
+// temp clone that may not contain what we expect. Nothing here is essential -
+// `claude-mesh upgrade` does the same job - so every path must exit 0.
 if (process.env.MESH_NO_POSTINSTALL === '1') process.exit(0);
+
+process.on('uncaughtException', () => process.exit(0));
+process.on('unhandledRejection', () => process.exit(0));
 
 const configured = fs.existsSync(path.join(os.homedir(), '.claude-mesh', 'config.json'));
 if (!configured) {
@@ -21,7 +27,12 @@ if (!configured) {
 }
 
 try {
-  const inst = require('../src/install.js');
+  const instPath = path.join(__dirname, '..', 'src', 'install.js');
+  if (!fs.existsSync(instPath)) {
+    console.log('claude-mesh installed. Run `claude-mesh upgrade` to refresh hooks and service.');
+    process.exit(0);
+  }
+  const inst = require(instPath);
   inst.installSkill();
   inst.install();
   const sv = inst.applyService();
