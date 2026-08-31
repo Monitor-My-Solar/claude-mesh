@@ -29,7 +29,25 @@ async function api(path, opts = {}) {
  * can override this by exporting MESH_NAME before it starts.
  */
 function sessionName(s) {
-  return `${RELAY_ID}/${s.pid}`;
+  return s.slug || String(s.pid);
+}
+
+/**
+ * Re-register every live local session under its current name and status. This
+ * is what keeps the roster correct across /rename and busy/idle transitions,
+ * since the SessionStart hook only fires once.
+ */
+async function refreshLocal() {
+  for (const s of localSessions()) {
+    await api('/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: sessionName(s), group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
+        socket: s.socket, relay: RELAY_ID,
+        sessionId: s.sessionId || '', status: s.status || '', pid: s.pid,
+      }),
+    }).catch(() => {});
+  }
 }
 
 const routes = new Map();   // mesh name -> {socket, token}
@@ -124,6 +142,7 @@ async function pump() {
 
 async function main() {
   console.log(`[relay] ${RELAY_ID} -> ${REGISTRY} (group ${GROUP})`);
+  await refreshLocal();
   const n = await announce();
   console.log(`[relay] registered ${n} session(s)`);
   setInterval(() => announce().catch(() => {}), 30_000);

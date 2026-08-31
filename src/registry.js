@@ -167,6 +167,8 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             relay:  String(d.relay || '').toLowerCase(),
             token:  d.token  || '',
             sessionId: d.sessionId || '',
+            status: d.status || '',
+            pid:    d.pid || null,
             seen:   Date.now(),
           });
           wake();

@@ -7,7 +7,8 @@ const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID } = cfg;
 
 const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
 const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
-const name = cfg.name || String(pid);
+const { localSessions } = require('../src/discover.js');
+const name = cfg.name || localSessions().find((x) => x.socket === sock)?.slug || String(pid);
 
 fetch(`${REGISTRY}/deregister`, {
   method: 'POST',

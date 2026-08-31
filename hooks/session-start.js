@@ -19,7 +19,11 @@ process.stdin.on('end', async () => {
 
   const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
   const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
-  const name = cfg.name || String(pid);
+
+  // Prefer the session's own name (it follows /rename); fall back to the pid.
+  const { localSessions } = require('../src/discover.js');
+  const me = localSessions().find((x) => x.socket === sock);
+  const name = cfg.name || me?.slug || String(pid);
 
   const headers = { 'Content-Type': 'application/json', ...(TOKEN ? { 'X-Mesh-Token': TOKEN } : {}) };
   let roster = [];
@@ -33,7 +37,9 @@ process.stdin.on('end', async () => {
         // the session can read it, so registering is an explicit opt-in to
         // being addressable. The relay cannot obtain this any other way.
         token: process.env.CLAUDE_CODE_MESSAGING_TOKEN || '',
-        sessionId: input.session_id || '',
+        sessionId: input.session_id || me?.sessionId || '',
+        status: me?.status || '',
+        pid: Number(pid) || null,
       }),
     });
     const r = await fetch(`${REGISTRY}/peers?group=${encodeURIComponent(GROUP)}`, { headers });
