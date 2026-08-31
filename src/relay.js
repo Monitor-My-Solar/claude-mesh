@@ -7,7 +7,7 @@
  * session's inbox socket. Delivery costs no model inference.
  */
 const os = require('os');
-const { deliver } = require('./peer.js');
+const { deliver, isAlive } = require('./peer.js');
 const { localSessions } = require('./discover.js');
 
 const cfg = require('./config.js').load();
@@ -43,8 +43,32 @@ const routes = new Map();   // mesh name -> {socket, token}
 async function announce() {
   try {
     const { routes: rows } = await api(`/routes?relay=${encodeURIComponent(RELAY_ID)}`);
-    routes.clear();
-    for (const r of rows) if (r.socket && r.token) routes.set(r.name, r);
+    for (const r of rows) {
+      if (!r.socket || !r.token) continue;
+      const pid = Number.parseInt(String(r.socket).match(/(\d+)\.sock$/)?.[1] ?? '', 10);
+      routes.set(r.name, { ...r, pid: Number.isNaN(pid) ? null : pid });
+    }
+
+    // Re-post anything the registry has forgotten. Registration normally happens
+    // in each session's SessionStart hook, which won't fire again until that
+    // session restarts, so without this a registry restart silently orphans
+    // every live session.
+    const known = new Set(rows.map((r) => r.name));
+    for (const [name, r] of routes) {
+      if (known.has(name)) continue;
+      if (!isAlive(r.pid)) { routes.delete(name); continue; }
+      await api('/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          name, group: GROUP, host: RELAY_ID, cwd: r.cwd || '',
+          socket: r.socket, relay: RELAY_ID, token: r.token,
+        }),
+      }).then(() => console.log(`[relay] re-registered ${name}`))
+        .catch((e) => console.error(`[relay] re-register ${name} failed:`, e.message));
+    }
+
+    // Drop routes for sessions that have exited.
+    for (const [name, r] of routes) if (!isAlive(r.pid)) routes.delete(name);
     return routes.size;
   } catch (e) {
     console.error('[relay] route refresh failed:', e.message);
@@ -85,6 +109,9 @@ async function pump() {
         token: target.token,               // the recipient's own token
         body: envelopeFor(m),
         fromName: `mesh:${m.from}`,
+        // 'immediate' asks the receiving session to surface the message as soon
+        // as it can rather than waiting for its next turn.
+        priority: m.priority === 'immediate' ? 'immediate' : 'next',
       });
       // The inbox socket never acknowledges, so a clean write is NOT proof of
       // delivery — a frame with a stale token is dropped silently. Say so.

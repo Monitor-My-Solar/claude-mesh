@@ -33,7 +33,8 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
   claude-mesh relay                              run this machine's relay daemon
   claude-mesh peers [--group G]                  who is online (all groups by default)
   claude-mesh local                              live sessions on this machine
-  claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID]
+  claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
+       --now                     ask the receiver to surface it immediately
                                  address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
 
@@ -158,6 +159,7 @@ async function main() {
         re:      arg(rest, '--re', ''),
         group:   conf.group,                    // sender's group
         toGroup: arg(rest, '--group', ''),      // optional recipient group
+        priority: has(rest, '--now') ? 'immediate' : 'next',
       }),
       });
     } catch (e) {

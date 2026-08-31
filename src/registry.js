@@ -198,6 +198,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             fromAddr: senderHit.error ? '' : `${peers.get(senderHit.name)?.group}/${senderHit.name}`,
             group: d.group || 'default',
             intent: d.intent || 'inform', re: d.re || '',
+            priority: d.priority === 'immediate' ? 'immediate' : 'next',
             body, ts: Date.now(),
           };
           qq.push(msg); bank.set(target, qq); wake();
