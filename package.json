@@ -9,8 +9,7 @@
   "scripts": {
     "serve": "node bin/claude-mesh serve",
     "relay": "node bin/claude-mesh relay",
-    "test": "node test/smoke.js",
-    "postinstall": "node scripts/postinstall.js || exit 0"
+    "test": "node test/smoke.js"
   },
   "keywords": [
     "claude",
@@ -33,7 +32,6 @@
     "src",
     "hooks",
     "skills",
-    "scripts",
     "README.md",
     "LICENSE"
   ]
