@@ -9,7 +9,10 @@
 set -euo pipefail
 
 REPO="${MESH_REPO:-https://github.com/Monitor-My-Solar/claude-mesh.git}"
-BRANCH="${MESH_BRANCH:-main}"
+# Track releases by default. MESH_CHANNEL=main follows the development branch;
+# MESH_REF=v0.1.0 pins an exact tag.
+CHANNEL="${MESH_CHANNEL:-stable}"
+REF="${MESH_REF:-}"
 APP="$HOME/.claude-mesh/app"
 BINDIR="${MESH_BINDIR:-$HOME/.local/bin}"
 
@@ -55,6 +58,8 @@ while [ $# -gt 0 ]; do
     --group)         GROUP="${2:?--group needs a value}";       shift 2 ;;
     --relay-id)      RELAY_ID="${2:?--relay-id needs a value}"; shift 2 ;;
     --no-service)    NO_SERVICE=1; shift ;;
+    --ref)           REF="${2:?--ref needs a value}"; shift 2 ;;
+    --main)          CHANNEL="main"; shift ;;
     --server)        MODE="server"; shift ;;
     --client)        MODE="client"; shift ;;
     -h|--help)
@@ -81,7 +86,7 @@ else
   step "cloning into $APP"
   rm -rf "$APP"
   mkdir -p "$(dirname "$APP")"
-  if ! git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$APP" 2>/dev/null; then
+  if ! git clone --quiet "$REPO" "$APP" 2>/dev/null; then
     cat >&2 <<'HINT'
 
   Could not clone the repository anonymously.
@@ -95,8 +100,10 @@ else
 HINT
     exit 1
   fi
+  git -C "$APP" fetch --quiet --tags origin 2>/dev/null || true
+  git -C "$APP" checkout --quiet "$(resolve_ref "$APP")" 2>/dev/null || true
 fi
-info "version $(git -C "$APP" rev-parse --short HEAD)"
+info "version $(git -C "$APP" describe --tags --always 2>/dev/null || git -C "$APP" rev-parse --short HEAD)"
 
 # --- launcher ---------------------------------------------------------------
 mkdir -p "$BINDIR"

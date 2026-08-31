@@ -57,7 +57,8 @@ curl -fsSL https://raw.githubusercontent.com/Monitor-My-Solar/claude-mesh/main/i
 
 It asks whether this machine runs the registry or connects to one, generates a
 token if you need it, installs the hooks and the `/mesh` skill, and starts the
-relay. Non-interactive:
+relay. Installs track the newest release tag; add `--main` to follow
+development, or `--ref v0.1.0` to pin an exact version. Non-interactive:
 
 ```bash
 curl -fsSL .../install.sh | bash -s -- --registry https://mesh.example.com --token <token>
