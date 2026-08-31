@@ -80,7 +80,10 @@ function localSessions() {
     .map((s) => ({
       ...s,
       slug: slug(s.name) || String(s.pid),
-      named: s.nameSource === 'explicit',   // /rename'd, not derived from cwd
+      // Claude Code reports 'user' for a /rename and 'derived' for a name it
+      // guessed from the directory. Treat anything that is not derived as
+      // deliberate, so a new source value does not silently demote a session.
+      named: !!s.nameSource && s.nameSource !== 'derived',
       self: s.socket === self,
     }));
 
