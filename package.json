@@ -1,14 +1,9 @@
 {
   "name": "claude-mesh",
   "version": "0.1.0",
-  "description": "LAN inter-agent messaging for Claude Code sessions - account-agnostic, cross-machine, no per-message model cost",
-  "bin": {
-    "claude-mesh": "./bin/claude-mesh"
-  },
+  "description": "LAN inter-agent messaging for Claude Code sessions - install with install.sh, not npm",
   "main": "src/peer.js",
   "scripts": {
-    "serve": "node bin/claude-mesh serve",
-    "relay": "node bin/claude-mesh relay",
     "test": "node test/run.js"
   },
   "keywords": [
@@ -27,12 +22,5 @@
     "node": ">=18"
   },
   "license": "MIT",
-  "files": [
-    "bin",
-    "src",
-    "hooks",
-    "skills",
-    "README.md",
-    "LICENSE"
-  ]
+  "private": true
 }
