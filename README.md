@@ -68,11 +68,16 @@ Windows named pipes are not supported yet).
 
 ### The registry
 
-One per network, on anything always-on — a container, a NAS, a spare box:
+One per network, on anything always-on — a container, a NAS, a spare box.
+Install it the same way as any other machine, then:
 
 ```bash
 claude-mesh serve --port 8787 --bind 0.0.0.0
 ```
+
+Update it with `claude-mesh update` and restart the service — never by
+copying files over its checkout, which leaves it unable to pull and
+silently pinned to an old version.
 
 It refuses to start without `MESH_TOKEN`. Put it behind a reverse proxy with a
 certificate and point clients at the `https://` URL; if your proxy caps read
