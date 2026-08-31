@@ -60,6 +60,8 @@ while [ $# -gt 0 ]; do
     --no-service)    NO_SERVICE=1; shift ;;
     --ref)           REF="${2:?--ref needs a value}"; shift 2 ;;
     --main)          CHANNEL="main"; shift ;;
+    --ref)           REF="${2:?--ref needs a value}"; shift 2 ;;
+    --main)          CHANNEL="main"; shift ;;
     --server)        MODE="server"; shift ;;
     --client)        MODE="client"; shift ;;
     -h|--help)
@@ -78,10 +80,18 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 info "node $(node --version)"
 
 # --- fetch ------------------------------------------------------------------
+# Resolve what to check out: an explicit ref, the newest release tag, or main.
+resolve_ref() {
+  if [ -n "$REF" ]; then echo "$REF"; return; fi
+  if [ "$CHANNEL" = "main" ]; then echo "origin/main"; return; fi
+  tag="$(git -C "$1" tag -l 'v*' --sort=-v:refname 2>/dev/null | head -1)"
+  if [ -n "$tag" ]; then echo "$tag"; else echo "origin/main"; fi
+}
+
 if [ -d "$APP/.git" ]; then
   step "updating $APP"
-  git -C "$APP" fetch --quiet origin "$BRANCH"
-  git -C "$APP" reset --quiet --hard "origin/$BRANCH"
+  git -C "$APP" fetch --quiet --tags --force origin main
+  git -C "$APP" reset --quiet --hard "$(resolve_ref "$APP")"
 else
   step "cloning into $APP"
   rm -rf "$APP"
