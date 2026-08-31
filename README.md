@@ -49,9 +49,12 @@ Or run it under systemd; see `docs/deploy.md`.
 ### Each machine with Claude sessions
 
 ```bash
-claude-mesh configure --ip 192.168.186.209 --token <shared-token> --group homelab
+claude-mesh configure --ip https://mesh.example.com --token <shared-token> --group homelab
 claude-mesh relay &
 ```
+
+`--ip` takes a bare host (with optional `--port`) or a full URL, so a TLS-terminating
+reverse proxy needs no other change.
 
 `configure` writes `~/.claude-mesh/config.json` and installs the SessionStart /
 SessionEnd hooks into `~/.claude/settings.json` (existing hooks are preserved, and
@@ -89,8 +92,10 @@ Read this before exposing it anywhere.
   `MESH_BIND`. Override with `MESH_ALLOW_INSECURE=1` only on a trusted host.
 - **The token is symmetric and spoofable**: any holder can claim any `from` name
   and can drain any relay's banked messages. Single-tenant LAN use only.
-- **Plain HTTP** — the token is sniffable on the wire. Put it behind TLS before it
-  ever leaves your LAN.
+- **Use TLS.** The token is a bearer credential; over plain HTTP it is sniffable on
+  the wire. Put the registry behind a reverse proxy with a certificate and point
+  clients at the https:// URL — `--ip https://mesh.example.com` works as-is.
+  If your proxy caps read timeouts below ~60s, raise them: `/inbox` long-polls.
 - Sessions publish their own inbox token, so registering is an explicit opt-in;
   `/peers` never returns those tokens.
 
