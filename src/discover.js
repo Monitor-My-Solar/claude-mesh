@@ -87,7 +87,12 @@ function localSessions() {
       self: s.socket === self,
     }));
 
-  if (fromFiles.length) return fromFiles;
+  // Fall back to raw socket enumeration only when the session registry is
+  // absent entirely (a Claude Code version that does not write it). If the
+  // directory exists but is empty, that genuinely means no sessions - falling
+  // back there resurrects ended sessions under their bare pid, so they are
+  // never deregistered and appear twice.
+  if (fromFiles.length || fs.existsSync(SESSIONS)) return fromFiles;
 
   return listLocalSockets()
     .filter((s) => isAlive(s.pid))

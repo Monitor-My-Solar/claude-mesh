@@ -94,9 +94,15 @@ async function announce() {
     // in each session's SessionStart hook, which won't fire again until that
     // session restarts, so without this a registry restart silently orphans
     // every live session.
+    //
+    // Only sessions this machine still sees are eligible: otherwise this
+    // resurrects a session we deliberately deregistered a moment earlier,
+    // and an ended session never leaves the roster.
     const known = new Set(rows.map((r) => r.name));
+    const liveNames = new Set(localSessions().map(sessionName));
     for (const [name, r] of routes) {
       if (known.has(name)) continue;
+      if (!liveNames.has(name)) { routes.delete(name); continue; }
       if (!isAlive(r.pid)) { routes.delete(name); continue; }
       await api('/register', {
         method: 'POST',

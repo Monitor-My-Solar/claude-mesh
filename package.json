@@ -9,7 +9,7 @@
   "scripts": {
     "serve": "node bin/claude-mesh serve",
     "relay": "node bin/claude-mesh relay",
-    "test": "node test/smoke.js"
+    "test": "node test/run.js"
   },
   "keywords": [
     "claude",

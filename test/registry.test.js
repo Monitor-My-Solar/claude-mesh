@@ -1,0 +1,150 @@
+'use strict';
+/** Registry behaviour: auth, addressing, mail, rate limits, join codes. */
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { test, run, assert, until } = require('./helpers.js');
+
+const TOKEN = 'test-token-0123456789';
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-test-'));
+process.env.MESH_STATE = path.join(tmp, 'state.json');
+process.env.MESH_USERS = path.join(tmp, 'users.json');
+process.env.MESH_TOKEN = TOKEN;
+
+const { createRegistry } = require('../src/registry.js');
+
+let base;
+const api = async (p, opts = {}, tok = TOKEN) => {
+  const res = await fetch(base + p, {
+    headers: { 'Content-Type': 'application/json', ...(tok ? { 'X-Mesh-Token': tok } : {}) },
+    ...opts,
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+};
+const register = (name, extra = {}) => api('/register', {
+  method: 'POST',
+  body: JSON.stringify({
+    name, group: 'g1', host: 'h1', relay: 'r1',
+    socket: `/tmp/cc-socks/${name}.sock`, token: 'peer-token', ...extra,
+  }),
+});
+
+test('rejects a bad token', async () => {
+  const r = await api('/health', {}, 'wrong');
+  assert.strictEqual(r.status, 401);
+});
+
+test('accepts the shared token', async () => {
+  const r = await api('/health');
+  assert.strictEqual(r.status, 200);
+  assert.ok(r.body.version, 'reports a version');
+});
+
+test('registers a peer and lists it', async () => {
+  await register('alpha');
+  const r = await api('/peers');
+  assert.ok(r.body.peers.some((p) => p.name === 'alpha'));
+});
+
+test('never exposes peer inbox tokens over /peers', async () => {
+  const r = await api('/peers');
+  assert.ok(r.body.peers.every((p) => p.token === undefined),
+    'a peer inbox token leaked through /peers');
+});
+
+test('/routes carries socket and token for the owning relay', async () => {
+  const r = await api('/routes?relay=r1');
+  const row = r.body.routes.find((x) => x.name === 'alpha');
+  assert.ok(row && row.socket && row.token, 'route is missing socket or token');
+});
+
+test('matches relay ids case-insensitively', async () => {
+  const r = await api('/routes?relay=R1');
+  assert.ok(r.body.routes.length > 0, 'MacMini and macmini must be one machine');
+});
+
+// The regression that made the whole mesh read stale: re-registering must
+// refresh `seen`, or every relay ages out despite being alive and polling.
+test('re-registering refreshes seen', async () => {
+  const first = (await api('/peers')).body.peers.find((p) => p.name === 'alpha').seen;
+  await new Promise((r) => setTimeout(r, 1100));
+  await register('alpha');
+  const second = (await api('/peers')).body.peers.find((p) => p.name === 'alpha').seen;
+  assert.ok(second > first, `seen did not advance (${first} -> ${second})`);
+});
+
+test('deregisters a peer', async () => {
+  await register('temp');
+  await api('/deregister', { method: 'POST', body: JSON.stringify({ name: 'temp' }) });
+  const r = await api('/peers');
+  assert.ok(!r.body.peers.some((p) => p.name === 'temp'));
+});
+
+test('resolves group/name, bare name, and rejects the unknown', async () => {
+  assert.strictEqual((await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'g1/alpha', from: 'x', body: 'hi' }) })).status, 200);
+  assert.strictEqual((await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'x', body: 'hi' }) })).status, 200);
+  const bad = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'nope', from: 'x', body: 'hi' }) });
+  assert.strictEqual(bad.status, 404);
+  assert.ok(Array.isArray(bad.body.online), 'an unknown peer should list who IS online');
+});
+
+test('banks mail and drains it to the right relay', async () => {
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'x', body: 'queued-message' }) });
+  const r = await api('/inbox?relay=r1&wait=1');
+  assert.ok(r.body.messages.some((m) => m.body === 'queued-message'));
+  const again = await api('/inbox?relay=r1&wait=1');
+  assert.ok(!again.body.messages.some((m) => m.body === 'queued-message'),
+    'a drained message must not be delivered twice');
+});
+
+test('rate-limits a sender to one peer', async () => {
+  let limited = 0;
+  for (let i = 0; i < 14; i++) {
+    const r = await api('/send', { method: 'POST',
+      body: JSON.stringify({ to: 'alpha', from: 'flooder', body: `n${i}` }) });
+    if (r.status === 429) limited++;
+  }
+  assert.ok(limited > 0, 'a flood of messages was not rate limited');
+});
+
+test('correlates a reply to its request via /await', async () => {
+  const sent = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'asker', body: 'question?' }) });
+  const id = sent.body.id;
+  const waiter = api(`/await?id=${id}&wait=5`);
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'answerer', re: id, body: 'the answer' }) });
+  const got = await waiter;
+  assert.strictEqual(got.body.reply.body, 'the answer');
+});
+
+test('join codes are single-use and need no prior credential', async () => {
+  const mint = await api('/join/new', { method: 'POST', body: JSON.stringify({ ttl: 60 }) });
+  const code = mint.body.code;
+  const redeem = await api('/join/redeem', { method: 'POST', body: JSON.stringify({ code }) }, null);
+  assert.strictEqual(redeem.body.token, TOKEN, 'redeeming should yield the shared token');
+  const again = await api('/join/redeem', { method: 'POST', body: JSON.stringify({ code }) }, null);
+  assert.strictEqual(again.status, 404, 'a join code must not work twice');
+});
+
+test('first run redirects to setup, and the API stays closed', async () => {
+  const res = await fetch(base + '/', { redirect: 'manual' });
+  assert.strictEqual(res.status, 302);
+  assert.ok(String(res.headers.get('location')).includes('setup'));
+  const anon = await fetch(base + '/peers');
+  assert.strictEqual(anon.status, 401, 'the API must not be open to anonymous browsers');
+});
+
+(async () => {
+  const server = createRegistry().listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  base = `http://127.0.0.1:${server.address().port}`;
+  const failed = await run('registry');
+  server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  process.exit(failed ? 1 : 0);
+})();
