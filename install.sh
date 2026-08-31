@@ -20,17 +20,32 @@ REGISTRY=""; TOKEN=""; GROUP=""; RELAY_ID=""; NO_SERVICE=0; MODE=""
 TTY=""
 if [ -e /dev/tty ] && [ -r /dev/tty ]; then TTY=/dev/tty; fi
 
-ask() {  # ask <prompt> <default> -> echoes the answer
-  local prompt="$1" default="${2:-}" reply=""
+ask() {  # ask <prompt> <default> [secret] -> echoes the answer
+  local prompt="$1" default="${2:-}" secret="${3:-}" reply=""
   if [ -z "$TTY" ]; then echo "$default"; return; fi
-  if [ -n "$default" ]; then printf '  %s [%s]: ' "$prompt" "$default" > "$TTY"
+  if [ -n "$default" ]; then printf '  %s %s[%s]%s: ' "$prompt" "$DIM" "$default" "$R" > "$TTY"
   else printf '  %s: ' "$prompt" > "$TTY"; fi
-  read -r reply < "$TTY" || true
+  if [ -n "$secret" ]; then
+    read -rs reply < "$TTY" || true          # a shared secret should not be echoed
+    printf '\n' > "$TTY"
+  else
+    read -r reply < "$TTY" || true
+  fi
   echo "${reply:-$default}"
 }
 
-die()  { printf '\nerror: %s\n' "$1" >&2; exit 1; }
-info() { printf '  %s\n' "$1"; }
+if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+  B=$(printf '\033[1m'); DIM=$(printf '\033[2m'); R=$(printf '\033[0m')
+  GRN=$(printf '\033[32m'); YEL=$(printf '\033[33m'); RED=$(printf '\033[31m')
+  CYN=$(printf '\033[36m')
+else
+  B=""; DIM=""; R=""; GRN=""; YEL=""; RED=""; CYN=""
+fi
+
+die()  { printf '\n  %s%s%s\n' "$RED" "$1" "$R" >&2; exit 1; }
+info() { printf '  %s✓%s %s\n' "$GRN" "$R" "$1"; }
+step() { printf '  %s→%s %s\n' "$CYN" "$R" "$1"; }
+rule() { printf '  %s────────────────────────────────────────────────────────%s\n' "$DIM" "$R"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,7 +62,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-printf '\nclaude-mesh installer\n\n'
+printf '\n  %sclaude-mesh%s %sinter-agent messaging for Claude Code%s\n\n' "$B" "$R" "$DIM" "$R" 
 
 command -v git  >/dev/null 2>&1 || die "git is required"
 command -v node >/dev/null 2>&1 || die "node 18+ is required (https://nodejs.org)"
@@ -58,11 +73,11 @@ info "node $(node --version)"
 
 # --- fetch ------------------------------------------------------------------
 if [ -d "$APP/.git" ]; then
-  info "updating $APP"
+  step "updating $APP"
   git -C "$APP" fetch --quiet origin "$BRANCH"
   git -C "$APP" reset --quiet --hard "origin/$BRANCH"
 else
-  info "cloning into $APP"
+  step "cloning into $APP"
   rm -rf "$APP"
   mkdir -p "$(dirname "$APP")"
   if ! git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$APP" 2>/dev/null; then
@@ -111,7 +126,7 @@ if [ -n "$TTY" ] && [ -z "$REGISTRY" ] && [ ! -f "$HOME/.claude-mesh/config.json
 
   if [ "$MODE" = "server" ]; then
     PORT="$(ask 'Port to listen on' '8787')"
-    TOKEN="$(ask 'Shared token (blank to generate one)' '')"
+    TOKEN="$(ask 'Shared token (blank to generate one)' '' secret)"
     if [ -z "$TOKEN" ]; then
       TOKEN="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
       printf '\n  Generated token - every machine on this mesh needs it:\n\n    %s\n\n' "$TOKEN"
@@ -123,7 +138,7 @@ if [ -n "$TTY" ] && [ -z "$REGISTRY" ] && [ ! -f "$HOME/.claude-mesh/config.json
   else
     REGISTRY="$(ask 'Registry URL (e.g. https://mesh.example.com)' '')"
     [ -n "$REGISTRY" ] || die "a registry URL is required"
-    TOKEN="$(ask 'Shared token' '')"
+    TOKEN="$(ask 'Shared token' '' secret)"
     [ -n "$TOKEN" ] || die "the shared token is required"
   fi
   GROUP="${GROUP:-$(ask 'Name for this machine' "$(hostname -s 2>/dev/null || hostname)")}"
@@ -154,14 +169,23 @@ if [ "$NO_SERVICE" -eq 1 ]; then
 else
   if "$BINDIR/claude-mesh" service >/dev/null 2>&1; then
     info "relay service installed and started"
+    # The relay registers on its first cycle; without this the status block
+    # below races it and reports a healthy install as broken.
+    printf '  %s→%s waiting for the relay to register' "$CYN" "$R"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 1; printf '.'
+      "$BINDIR/claude-mesh" status 2>/dev/null | grep -q '^relay    running' && break
+    done
+    printf '\n'
   else
-    info "relay service could not be started; run: claude-mesh service"
+    printf '  %s!%s relay service could not be started; run: claude-mesh service\n' "$YEL" "$R"
   fi
 fi
 
-printf '\n  ------------------------------------------------------------\n'
-"$BINDIR/claude-mesh" status || true
-printf '  ------------------------------------------------------------\n'
+printf '\n'
+rule
+"$BINDIR/claude-mesh" status 2>&1 | sed 's/^/  /' || true
+rule
 
 if [ "${RUN_SERVER:-0}" = "1" ]; then
   cat <<EOF

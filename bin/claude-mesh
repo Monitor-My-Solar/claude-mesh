@@ -201,10 +201,15 @@ async function main() {
         console.log('relay    (no local sessions to register)');
       } else if (!missing.length) {
         console.log(`relay    running - all ${local.length} session(s) registered`);
+      } else if (missing.length < local.length) {
+        // Some registered: the relay is alive but mid-cycle, or those sessions
+        // started since its last pass. It re-registers every 15s.
+        console.log(`relay    running - ${local.length - missing.length} of ${local.length} ` +
+                    'session(s) registered, the rest catch up within ~15s');
       } else {
-        console.log(`relay    NOT RUNNING or stale - ${missing.length} of ${local.length} ` +
-                    'session(s) are not in the registry,');
-        console.log('         so this machine cannot be reached. Start it with:');
+        console.log(`relay    NOT RUNNING - none of this machine's ${local.length} session(s) ` +
+                    'are registered,');
+        console.log('         so it cannot be reached. Start it with:');
         console.log('           claude-mesh service        (installs + starts it)');
         console.log('           claude-mesh relay          (foreground, to debug)');
       }
