@@ -36,8 +36,16 @@ names change, and a machine whose relay is not running is invisible. Never
 retry variations of an address that failed - if a name is not in `peers`,
 no spelling of it will route.
 
-Prefer an `idle` peer over a `busy` one. Both work; a busy one just answers
-at its next tool-call boundary rather than immediately.
+Status tells you how soon a peer will answer:
+
+| status | meaning |
+|---|---|
+| `idle` | at the prompt - wakes on your message, answers in a few seconds |
+| `busy` | mid-turn - picks your message up at its next tool-call boundary |
+| `waiting` | blocked on its own user - may not answer until that person returns |
+
+All three are deliverable. Prefer `idle` or `busy` when you need an answer;
+a `waiting` peer is the one likely to leave an `ask` timing out.
 
 ## Sending
 
