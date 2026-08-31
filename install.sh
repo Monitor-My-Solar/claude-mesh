@@ -49,7 +49,20 @@ else
   info "cloning into $APP"
   rm -rf "$APP"
   mkdir -p "$(dirname "$APP")"
-  git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$APP"
+  if ! git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$APP" 2>/dev/null; then
+    cat >&2 <<'HINT'
+
+  Could not clone the repository anonymously.
+
+  If it is private, authenticate first (any one of these):
+    gh auth login                       # GitHub CLI
+    ssh-add ~/.ssh/id_ed25519           # then: MESH_REPO=git@github.com:OWNER/REPO.git
+    git config --global credential.helper store
+
+  Then re-run this installer.
+HINT
+    exit 1
+  fi
 fi
 info "version $(git -C "$APP" rev-parse --short HEAD)"
 
