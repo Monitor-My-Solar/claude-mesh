@@ -10,6 +10,7 @@ const os = require('os');
 const { deliver, isAlive } = require('./peer.js');
 const { localSessions } = require('./discover.js');
 
+const VERSION = require('./version.js');
 const cfg = require('./config.js').load();
 const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID, group: GROUP } = cfg;
 
@@ -66,7 +67,7 @@ async function refreshLocal() {
         name: sessionName(s), group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
         socket: s.socket, relay: RELAY_ID,
         sessionId: s.sessionId || '', status: s.status || '', pid: s.pid,
-        token: s.token || '', named: !!s.named,
+        token: s.token || '', named: !!s.named, version: VERSION.full,
       }),
     }).catch(() => {});
   }
@@ -159,6 +160,36 @@ async function pump() {
     } catch (e) {
       console.error(`[relay] UNDELIVERED ${m.id} -> ${m.to}:`, e.message);
     }
+  }
+}
+
+/**
+ * Self-update: check the registry's version periodically and pull when this
+ * machine is behind. Opt-out via MESH_AUTO_UPDATE=0 - some people will want to
+ * pin a version, and silently changing code on someone's machine is a decision
+ * they should be able to decline.
+ */
+async function autoUpdate() {
+  if (process.env.MESH_AUTO_UPDATE === '0') return;
+  let health;
+  try { health = await api('/health'); } catch { return; }
+  if (!health.version || health.version === VERSION.full) return;
+
+  const { execSync } = require('child_process');
+  const root = VERSION.root;
+  if (!require('fs').existsSync(require('path').join(root, '.git'))) return;
+
+  console.log(`[relay] registry is ${health.version}, this machine is ${VERSION.full}: updating`);
+  try {
+    execSync('git fetch --quiet origin main && git reset --quiet --hard origin/main',
+             { cwd: root, stdio: 'ignore' });
+    const inst = require('./install.js');
+    inst.installSkill();
+    inst.install();
+    console.log('[relay] updated; restarting to pick up the new code');
+    process.exit(0);          // the service manager restarts us
+  } catch (e) {
+    console.error('[relay] self-update failed:', e.message);
   }
 }
 

@@ -158,14 +158,32 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         console.log(`${code} ${req.method} ${req.url.split('?')[0]} from ${who} (${Date.now() - started}ms)`);
     };
     const isRedeem = req.method === 'POST' && req.url.startsWith('/join/redeem');
-    if (token && !isRedeem && !safeEqual(req.headers['x-mesh-token'], token))
+
+    // The dashboard authenticates with ?token=..., since a browser cannot set
+    // a header on a plain navigation. It is read-only and serves the same data
+    // the CLI already exposes to any token holder.
+    const urlTok = new URL(req.url, 'http://localhost').searchParams.get('token');
+    const supplied = req.headers['x-mesh-token'] || urlTok;
+
+    if (token && !isRedeem && !safeEqual(supplied, token))
       return reply(401, { error: 'bad token' });
 
     const url = new URL(req.url, 'http://localhost');
     const q = url.searchParams;
 
     if (req.method === 'GET') {
-      if (url.pathname === '/health') { prune(); return reply(200, { ok: true, peers: peers.size }); }
+      if (url.pathname === '/' || url.pathname === '/ui') {
+        const body = Buffer.from(require('./ui.js').page(urlTok || ''));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
+                             'Content-Length': body.length,
+                             'Cache-Control': 'no-store' });
+        return res.end(body);
+      }
+
+      if (url.pathname === '/health') {
+        prune();
+        return reply(200, { ok: true, peers: peers.size, version: require('./version.js').full });
+      }
 
       if (url.pathname === '/peers') {
         prune();
@@ -277,6 +295,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             sessionId: d.sessionId || '',
             status: d.status || '',
             named:  !!d.named,
+            version: d.version || '',
             pid:    d.pid || null,
             seen:   Date.now(),
           });
