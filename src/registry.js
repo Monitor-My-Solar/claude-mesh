@@ -72,6 +72,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
   const rate = new Map();    // "from" and "from>to" -> [timestamps]
+  const joins = new Map();   // join code -> {expires, uses}
 
   /**
    * Allow a send unless this sender is over its window budget, either overall
@@ -156,7 +157,9 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
       if (!(code === 200 && req.url.startsWith('/inbox')))
         console.log(`${code} ${req.method} ${req.url.split('?')[0]} from ${who} (${Date.now() - started}ms)`);
     };
-    if (token && !safeEqual(req.headers['x-mesh-token'], token)) return reply(401, { error: 'bad token' });
+    const isRedeem = req.method === 'POST' && req.url.startsWith('/join/redeem');
+    if (token && !isRedeem && !safeEqual(req.headers['x-mesh-token'], token))
+      return reply(401, { error: 'bad token' });
 
     const url = new URL(req.url, 'http://localhost');
     const q = url.searchParams;
@@ -286,6 +289,26 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           peers.delete(String(d.name || '').trim());
           persist();
           return reply(200, { ok: true });
+        }
+
+        if (url.pathname === '/join/redeem') {
+          const code = String(d.code || '').trim().toUpperCase();
+          const rec = joins.get(code);
+          if (!rec) return reply(404, { error: 'unknown or already-used join code' });
+          if (Date.now() > rec.expires) { joins.delete(code); return reply(410, { error: 'join code expired' }); }
+          rec.uses -= 1;
+          if (rec.uses <= 0) joins.delete(code); else joins.set(code, rec);
+          return reply(200, { token });
+        }
+
+        if (url.pathname === '/join/new') {
+          // Minting requires the master token; the code it returns is a
+          // short-lived, single-use stand-in so a new machine never needs the
+          // master token pasted into a terminal or a chat log.
+          const ttl = Math.min(Math.max(Number(d.ttl || 900), 60), 86_400);
+          const code = randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase();
+          joins.set(code, { expires: Date.now() + ttl * 1000, uses: Number(d.uses || 1) });
+          return reply(200, { code, expires_in: ttl, uses: Number(d.uses || 1) });
         }
 
         if (url.pathname === '/send') {

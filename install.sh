@@ -13,7 +13,7 @@ BRANCH="${MESH_BRANCH:-main}"
 APP="$HOME/.claude-mesh/app"
 BINDIR="${MESH_BINDIR:-$HOME/.local/bin}"
 
-REGISTRY=""; TOKEN=""; GROUP=""; RELAY_ID=""; NO_SERVICE=0; MODE=""
+REGISTRY=""; TOKEN=""; GROUP=""; RELAY_ID=""; NO_SERVICE=0; MODE=""; JOIN=""
 
 # Interactive prompts need a real terminal. Piping the script through bash
 # leaves stdin as the pipe, so read from /dev/tty when one exists.
@@ -51,6 +51,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --registry|--ip) REGISTRY="${2:?--registry needs a value}"; shift 2 ;;
     --token)         TOKEN="${2:?--token needs a value}";       shift 2 ;;
+    --join)          JOIN="${2:?--join needs a value}";         shift 2 ;;
     --group)         GROUP="${2:?--group needs a value}";       shift 2 ;;
     --relay-id)      RELAY_ID="${2:?--relay-id needs a value}"; shift 2 ;;
     --no-service)    NO_SERVICE=1; shift ;;
@@ -124,6 +125,11 @@ if [ -n "$TTY" ] && [ -z "$REGISTRY" ] && [ ! -f "$HOME/.claude-mesh/config.json
     esac
   fi
 
+  if [ "$MODE" = "client" ] && [ -z "$JOIN" ] && [ -z "$TOKEN" ]; then
+    printf '\n  On a machine that is already on the mesh, run %sclaude-mesh invite%s\n' "$B" "$R"
+    printf '  to get a short-lived join code, or paste the shared token.\n\n'
+  fi
+
   if [ "$MODE" = "server" ]; then
     PORT="$(ask 'Port to listen on' '8787')"
     TOKEN="$(ask 'Shared token (blank to generate one)' '' secret)"
@@ -138,14 +144,36 @@ if [ -n "$TTY" ] && [ -z "$REGISTRY" ] && [ ! -f "$HOME/.claude-mesh/config.json
   else
     REGISTRY="$(ask 'Registry URL (e.g. https://mesh.example.com)' '')"
     [ -n "$REGISTRY" ] || die "a registry URL is required"
-    TOKEN="$(ask 'Shared token' '' secret)"
-    [ -n "$TOKEN" ] || die "the shared token is required"
+    JOIN="$(ask 'Join code (blank to paste the token instead)' '')"
+    if [ -z "$JOIN" ]; then
+      TOKEN="$(ask 'Shared token' '' secret)"
+      [ -n "$TOKEN" ] || die "a join code or the shared token is required"
+    fi
   fi
   GROUP="${GROUP:-$(ask 'Name for this machine' "$(hostname -s 2>/dev/null || hostname)")}"
   RELAY_ID="${RELAY_ID:-$GROUP}"
 fi
 
 # --- configure --------------------------------------------------------------
+# A join code is redeemed into the real token first, so the rest of this block
+# only ever deals with a token.
+if [ -n "$JOIN" ] && [ -z "$TOKEN" ]; then
+  [ -n "$REGISTRY" ] || die "--join needs --registry"
+  step "redeeming join code"
+  TOKEN="$(node -e '
+    const [url, code] = process.argv.slice(1);
+    fetch(url.replace(/\/+$/, "") + "/join/redeem", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).then(async (r) => {
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok || !b.token) { console.error(b.error || r.status); process.exit(1); }
+      console.log(b.token);
+    }).catch((e) => { console.error(e.message); process.exit(1); });
+  ' "$REGISTRY" "$JOIN")" || die "could not redeem the join code (expired or already used?)"
+  info "join code accepted"
+fi
+
 CFG_ARGS=()
 [ -n "$REGISTRY" ] && CFG_ARGS+=(--ip "$REGISTRY")
 [ -n "$TOKEN" ]    && CFG_ARGS+=(--token "$TOKEN")
@@ -159,7 +187,7 @@ elif [ -f "$HOME/.claude-mesh/config.json" ]; then
   "$BINDIR/claude-mesh" upgrade >/dev/null
   info "kept existing config; hooks and skill refreshed"
 else
-  printf '\n  No registry configured yet. Finish with:\n    claude-mesh configure --ip https://<registry-host> --token <token>\n\n'
+  printf '\n  Not configured yet. Finish with:\n    claude-mesh configure --ip https://<registry-host> --token <token>\n\n'
   exit 0
 fi
 

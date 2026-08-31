@@ -84,6 +84,9 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
                                  send a question and print the answer (blocks)
                                  address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
+  claude-mesh token                              print the shared token
+  claude-mesh invite [--ttl SECS] [--uses N]     mint a single-use join code
+  claude-mesh join --code CODE [--ip URL]        redeem one on a new machine
 
 Config precedence: env (MESH_*) > ~/.claude-mesh/config.json > defaults.`;
 
@@ -165,6 +168,47 @@ async function main() {
     const sv = inst.applyService();
     console.log(`service-> ${sv.file}${sv.ok ? ' (restarted)' : ' (start it manually)'}`);
     console.log(`config   ${cfg.FILE} (unchanged: ${conf.registry})`);
+    return;
+  }
+
+  if (cmd === 'token') {
+    // Retrieving the shared token after the fact. Prints nothing else, so it
+    // composes: claude-mesh token | pbcopy
+    if (!conf.token) { console.error('no token configured'); process.exit(1); }
+    console.log(conf.token);
+    return;
+  }
+
+  if (cmd === 'invite') {
+    // Mint a short-lived single-use join code, so adding a machine never means
+    // pasting the master token into a terminal, a chat, or a transcript.
+    const ttl = Number(arg(rest, '--ttl', '900'));
+    const uses = Number(arg(rest, '--uses', '1'));
+    const j = await api('/join/new', conf, {
+      method: 'POST', body: JSON.stringify({ ttl, uses }),
+    });
+    const mins = Math.round(j.expires_in / 60);
+    console.log(`\n  Join code: ${j.code}`);
+    console.log(`  Valid for ${mins} minute(s), ${j.uses} use(s).\n`);
+    console.log('  On the new machine, run:\n');
+    console.log('    curl -fsSL https://raw.githubusercontent.com/Monitor-My-Solar/claude-mesh/main/install.sh \\');
+    console.log(`      | bash -s -- --registry ${conf.registry} --join ${j.code}\n`);
+    return;
+  }
+
+  if (cmd === 'join') {
+    // Redeem a join code for the shared token and configure this machine.
+    const code = arg(rest, '--code', rest[0]);
+    const registry = arg(rest, '--ip', conf.registry);
+    if (!code) { console.error('usage: claude-mesh join --code <CODE> [--ip <registry>]'); process.exit(1); }
+    const res = await fetch(`${registry}/join/redeem`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { console.error(`claude-mesh: ${body.error || res.status}`); process.exit(1); }
+    cfg.save({ registry, token: body.token });
+    console.log(`joined ${registry}`);
     return;
   }
 
