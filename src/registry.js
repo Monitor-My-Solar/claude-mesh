@@ -55,6 +55,11 @@ function safeEqual(a, b) {
 const STALE_MS  = Number(process.env.MESH_STALE_MS  || 15 * 60_000);
 const MAX_BANK  = Number(process.env.MESH_MAX_BANK  || 50);
 const MAX_BODY  = Number(process.env.MESH_MAX_BODY  || 16_384);
+// Per-sender limits. Messages become turns in a live session, so an agent loop
+// is not just noise - it burns the recipient's context and tokens.
+const RATE_WINDOW_MS = Number(process.env.MESH_RATE_WINDOW_MS || 60_000);
+const RATE_MAX       = Number(process.env.MESH_RATE_MAX       || 20);
+const PAIR_MAX       = Number(process.env.MESH_PAIR_MAX       || 10);
 
 function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = process.env.MESH_ALLOW_INSECURE === '1' } = {}) {
   if (!token && !allowInsecure) {
@@ -66,6 +71,29 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const bank  = new Map();   // name -> [msg]
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
+  const rate = new Map();    // "from" and "from>to" -> [timestamps]
+
+  /**
+   * Allow a send unless this sender is over its window budget, either overall
+   * or against one recipient. Two agents can otherwise ping-pong indefinitely,
+   * and each hop costs the receiver a turn.
+   */
+  function rateCheck(from, to) {
+    const now = Date.now();
+    const bump = (key, max) => {
+      const hits = (rate.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
+      if (hits.length >= max) { rate.set(key, hits); return false; }
+      hits.push(now);
+      rate.set(key, hits);
+      return true;
+    };
+    const secs = Math.round(RATE_WINDOW_MS / 1000);
+    if (!bump(`${from}>${to}`, PAIR_MAX))
+      return `rate limit: ${PAIR_MAX} messages per ${secs}s to a single peer`;
+    if (!bump(from, RATE_MAX))
+      return `rate limit: ${RATE_MAX} messages per ${secs}s total`;
+    return null;
+  }
 
   // Persist the roster and undelivered mail so a restart does not silently
   // orphan every session and drop queued messages.
@@ -269,6 +297,9 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           const resolved = resolveTarget(peers, to, d.toGroup);
           if (resolved.error) return reply(404, resolved);
           const target = resolved.name;
+
+          const limited = rateCheck(String(d.from || 'unknown'), target);
+          if (limited) return reply(429, { error: limited });
           const qq = bank.get(target) || [];
           if (qq.length >= MAX_BANK) return reply(429, { error: 'recipient bank full' });
           // Resolve the sender to a registered address so REPLY is actionable.

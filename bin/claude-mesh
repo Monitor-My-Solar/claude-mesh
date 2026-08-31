@@ -173,8 +173,42 @@ async function main() {
     console.log(`token    ${conf.token ? conf.token.slice(0, 8) + '…' : '(none)'}`);
     console.log(`relayId  ${conf.relayId}`);
     console.log(`group    ${conf.group}`);
-    try { const h = await api('/health', conf); console.log(`server   reachable, ${h.peers} peer(s)`); }
-    catch (e) { console.log(`server   UNREACHABLE (${e.message})`); }
+
+    let reachable = false;
+    try {
+      const h = await api('/health', conf);
+      console.log(`server   reachable, ${h.peers} peer(s)`);
+      reachable = true;
+    } catch (e) {
+      console.log(`server   UNREACHABLE (${e.message})`);
+    }
+
+    // Whether THIS machine's relay is running is the most common failure:
+    // without it the machine is invisible and nothing says why.
+    const { localSessions } = require('../src/discover.js');
+    const local = localSessions();
+    console.log(`sessions ${local.length} live on this machine`);
+
+    if (reachable) {
+      let mine = [];
+      try {
+        const { routes } = await api(`/routes?relay=${encodeURIComponent(conf.relayId)}`, conf);
+        mine = routes;
+      } catch {}
+      const registered = new Set(mine.map((r) => r.name));
+      const missing = local.filter((s) => !registered.has(s.slug));
+      if (!local.length) {
+        console.log('relay    (no local sessions to register)');
+      } else if (!missing.length) {
+        console.log(`relay    running - all ${local.length} session(s) registered`);
+      } else {
+        console.log(`relay    NOT RUNNING or stale - ${missing.length} of ${local.length} ` +
+                    'session(s) are not in the registry,');
+        console.log('         so this machine cannot be reached. Start it with:');
+        console.log('           claude-mesh service        (installs + starts it)');
+        console.log('           claude-mesh relay          (foreground, to debug)');
+      }
+    }
     return;
   }
 
