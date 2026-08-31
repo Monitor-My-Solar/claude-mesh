@@ -37,6 +37,10 @@ process.stdin.on('end', async () => {
         // the session can read it, so registering is an explicit opt-in to
         // being addressable. The relay cannot obtain this any other way.
         token: process.env.CLAUDE_CODE_MESSAGING_TOKEN || '',
+        // Report the version here too: a session registered by the hook rather
+        // than by a relay would otherwise show as an unknown version forever.
+        version: require('../src/version.js').full,
+        named: me?.named || false,
         sessionId: input.session_id || me?.sessionId || '',
         status: me?.status || '',
         pid: Number(pid) || null,
