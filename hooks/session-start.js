@@ -20,10 +20,23 @@ process.stdin.on('end', async () => {
   const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
   const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
 
-  // Prefer the session's own name (it follows /rename); fall back to the pid.
+  // SessionStart can fire before Claude Code has written this session's file,
+  // so the name may not be resolvable yet. Registering under the bare pid then
+  // leaves an orphan the relay never reconciles - it registers the same session
+  // under its real name and has no idea the pid entry refers to it. Wait
+  // briefly for the name, and if it never appears, leave registration to the
+  // relay (which runs every 15s and always has the real name).
   const { localSessions } = require('../src/discover.js');
-  const me = localSessions().find((x) => x.socket === sock);
-  const name = cfg.name || me?.slug || String(pid);
+  let me = null;
+  for (let i = 0; i < 10 && !me; i++) {
+    me = localSessions().find((x) => x.socket === sock) || null;
+    if (!me) await new Promise((r) => setTimeout(r, 200));
+  }
+  const name = cfg.name || me?.slug;
+  if (!name) {
+    // No name yet: say nothing rather than creating a pid-named orphan.
+    return process.exit(0);
+  }
 
   const headers = { 'Content-Type': 'application/json', ...(TOKEN ? { 'X-Mesh-Token': TOKEN } : {}) };
   let roster = [];

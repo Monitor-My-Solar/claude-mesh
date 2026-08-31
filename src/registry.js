@@ -142,6 +142,18 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
     for (const [n, p] of peers) if (p.seen < cutoff) peers.delete(n);
+
+    // Drop bare-pid registrations once the same machine has registered a named
+    // session on that pid. An old SessionStart hook could register before the
+    // session file existed, leaving an orphan under the pid that nothing ever
+    // reconciles - the relay registers the same session under its real name and
+    // has no idea the two are the same.
+    const namedPids = new Set();
+    for (const p of peers.values()) if (p.pid && !/^\d+$/.test(p.name)) namedPids.add(`${p.relay}:${p.pid}`);
+    for (const [n, p] of peers) {
+      if (!/^\d+$/.test(n)) continue;
+      if (namedPids.has(`${p.relay}:${n}`) || !p.version) peers.delete(n);
+    }
   };
 
   const wake = () => {

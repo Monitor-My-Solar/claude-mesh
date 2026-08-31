@@ -73,6 +73,17 @@ test('re-registering refreshes seen', async () => {
   assert.ok(second > first, `seen did not advance (${first} -> ${second})`);
 });
 
+// An old SessionStart hook registered under the bare pid when it ran before
+// the session file existed, and nothing ever reconciled that with the relay's
+// registration of the same session under its real name.
+test('drops bare-pid orphans once the session is registered by name', async () => {
+  await register('4242', { pid: 4242 });                    // orphan, no version
+  await register('real-session', { pid: 4242, version: '0.1.0+abc1234' });
+  const { peers } = (await api('/peers')).body;
+  assert.ok(peers.some((p) => p.name === 'real-session'), 'the named session survives');
+  assert.ok(!peers.some((p) => p.name === '4242'), 'the pid orphan should be pruned');
+});
+
 test('deregisters a peer', async () => {
   await register('temp');
   await api('/deregister', { method: 'POST', body: JSON.stringify({ name: 'temp' }) });
