@@ -198,7 +198,13 @@ async function main() {
   await refreshLocal();
   const n = await announce();
   console.log(`[relay] registered ${n} session(s)`);
-  setInterval(() => announce().catch(() => {}), 30_000);
+  // Both halves must run on the timer: refreshLocal() POSTs this machine's
+  // sessions (which is what keeps `seen` fresh), announce() reads back the
+  // routes we deliver to. Running only announce() left every relay registering
+  // once at startup and then ageing into staleness forever.
+  setInterval(() => {
+    refreshLocal().then(announce).catch((e) => console.error('[relay] refresh failed:', e.message));
+  }, 15_000);
   let backoff = 1000;
   for (;;) {
     try {
