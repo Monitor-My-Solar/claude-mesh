@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 /** SessionEnd hook — remove this session from the mesh roster. */
-const os = require('os');
+const cfg = require('../src/config.js').load();
 
-const REGISTRY = process.env.MESH_REGISTRY || 'http://127.0.0.1:8787';
-const TOKEN    = process.env.MESH_TOKEN || '';
-const RELAY_ID = process.env.MESH_RELAY_ID || os.hostname();
+const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID } = cfg;
 
 const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
 const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
-const name = process.env.MESH_NAME || `${RELAY_ID}/${pid}`;
+const name = cfg.name || `${RELAY_ID}/${pid}`;
 
 fetch(`${REGISTRY}/deregister`, {
   method: 'POST',

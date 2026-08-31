@@ -7,12 +7,9 @@
  *   "SessionStart": [{ "hooks": [{ "type": "command",
  *      "command": "node /path/to/claude-mesh/hooks/session-start.js" }] }]
  */
-const os = require('os');
+const cfg = require('../src/config.js').load();
 
-const REGISTRY = process.env.MESH_REGISTRY || 'http://127.0.0.1:8787';
-const TOKEN    = process.env.MESH_TOKEN || '';
-const RELAY_ID = process.env.MESH_RELAY_ID || os.hostname();
-const GROUP    = process.env.MESH_GROUP || 'default';
+const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID, group: GROUP } = cfg;
 
 let raw = '';
 process.stdin.on('data', (c) => (raw += c));
@@ -22,7 +19,7 @@ process.stdin.on('end', async () => {
 
   const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
   const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
-  const name = process.env.MESH_NAME || `${RELAY_ID}/${pid}`;
+  const name = cfg.name || `${RELAY_ID}/${pid}`;
 
   const headers = { 'Content-Type': 'application/json', ...(TOKEN ? { 'X-Mesh-Token': TOKEN } : {}) };
   let roster = [];
@@ -56,7 +53,7 @@ process.stdin.on('end', async () => {
     'Other agents online:',
     lines,
     '',
-    'To message one:  cc-mesh send --to <name> --body "<text>" [--intent request|inform|reply-needed|fyi]',
+    'To message one:  claude-mesh send --to <name> --body "<text>" [--intent request|inform|reply-needed|fyi]',
     'Messages arrive as <cross-session-message> with FROM / INTENT / REPLY lines; reply with the REPLY command.',
   ].join('\n');
 

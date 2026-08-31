@@ -100,7 +100,7 @@ async function main() {
     process.env.MESH_TOKEN = conf.token;
     process.env.MESH_RELAY_ID = conf.relayId;
     process.env.MESH_GROUP = conf.group;
-    return require('../src/relay.js');
+    return require('../src/relay.js').main();
   }
 
   if (cmd === 'local') {

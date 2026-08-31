@@ -10,10 +10,8 @@ const os = require('os');
 const { deliver } = require('./peer.js');
 const { localSessions } = require('./discover.js');
 
-const REGISTRY = process.env.MESH_REGISTRY || 'http://127.0.0.1:8787';
-const TOKEN    = process.env.MESH_TOKEN || '';
-const RELAY_ID = process.env.MESH_RELAY_ID || os.hostname();
-const GROUP    = process.env.MESH_GROUP || 'default';
+const cfg = require('./config.js').load();
+const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID, group: GROUP } = cfg;
 
 const headers = () => ({
   'Content-Type': 'application/json',
@@ -59,7 +57,7 @@ function envelopeFor(m) {
     `FROM: ${m.from}`,
     `INTENT: ${m.intent}`,
     ...(m.re ? [`RE: ${m.re}`] : []),
-    `REPLY: cc-mesh send --to ${m.from} --re ${m.id}`,
+    `REPLY: claude-mesh send --to ${m.from} --re ${m.id}`,
   ].join('\n');
   return `${head}\n\n${m.body}`;
 }
@@ -105,4 +103,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { announce, pump, sessionName };
+module.exports = { main, announce, pump, sessionName };
