@@ -85,6 +85,7 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
                                  address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
   claude-mesh token                              print the shared token
+  claude-mesh user list|add|passwd|remove        dashboard accounts (on the registry host)
   claude-mesh invite [--ttl SECS] [--uses N]     mint a single-use join code
   claude-mesh join --code CODE [--ip URL]        redeem one on a new machine
 
@@ -169,6 +170,39 @@ async function main() {
     console.log(`service-> ${sv.file}${sv.ok ? ' (restarted)' : ' (start it manually)'}`);
     console.log(`config   ${cfg.FILE} (unchanged: ${conf.registry})`);
     return;
+  }
+
+  if (cmd === 'user' || cmd === 'users') {
+    // Account management runs ON the registry host, against its user store.
+    const users = require('../src/users.js');
+    const [sub, ...a] = rest;
+
+    if (!sub || sub === 'list') {
+      const list = users.list();
+      if (!list.length) return console.log('no accounts yet - the first sign-in creates the admin');
+      for (const u of list) console.log(`${u.username.padEnd(20)} ${u.role}`);
+      return;
+    }
+    if (sub === 'add') {
+      const name = a[0];
+      const pw = arg(a, '--password');
+      if (!name || !pw) { console.error('usage: claude-mesh user add <username> --password <pw> [--role admin|viewer]'); process.exit(1); }
+      try { console.log('created', users.create(name, pw, { role: arg(a, '--role', 'viewer') })); }
+      catch (e) { console.error(`claude-mesh: ${e.message}`); process.exit(1); }
+      return;
+    }
+    if (sub === 'passwd') {
+      const name = a[0], pw = arg(a, '--password');
+      if (!name || !pw) { console.error('usage: claude-mesh user passwd <username> --password <pw>'); process.exit(1); }
+      try { users.setPassword(name, pw); console.log('password updated'); }
+      catch (e) { console.error(`claude-mesh: ${e.message}`); process.exit(1); }
+      return;
+    }
+    if (sub === 'remove' || sub === 'rm') {
+      const n = users.remove(a[0]);
+      return console.log(n ? `removed ${a[0]}` : `no such user '${a[0]}'`);
+    }
+    console.error(`unknown: user ${sub}`); process.exit(1);
   }
 
   if (cmd === 'token') {

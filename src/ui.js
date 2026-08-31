@@ -6,6 +6,49 @@
  * dependencies: it exists to answer "who is online and what is out of date"
  * at a glance, which is otherwise an ssh-and-compare-checksums job.
  */
+const SHELL_CSS = `
+  :root{--bg:#0f1115;--card:#171a21;--line:#252a34;--fg:#e6e8ec;--dim:#8b93a3;
+        --ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#58a6ff;color-scheme:dark}
+  @media(prefers-color-scheme:light){:root{--bg:#f6f7f9;--card:#fff;--line:#e3e6ea;
+        --fg:#1c2024;--dim:#606a76;color-scheme:light}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`;
+
+/** Login, or first-run account creation when no users exist yet. */
+function loginPage({ setup = false, error = '' } = {}) {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>claude-mesh</title><style>${SHELL_CSS}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  form{background:var(--card);border:1px solid var(--line);border-radius:10px;
+       padding:26px;width:100%;max-width:340px}
+  h1{font-size:15px;margin:0 0 4px}
+  p{color:var(--dim);font-size:12px;margin:0 0 18px}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+        color:var(--dim);margin:12px 0 4px}
+  input{width:100%;padding:8px 10px;background:var(--bg);color:var(--fg);
+        border:1px solid var(--line);border-radius:6px;font:inherit}
+  input:focus{outline:2px solid var(--acc);outline-offset:-1px}
+  button{width:100%;margin-top:18px;padding:9px;background:var(--acc);color:#04121f;
+         border:0;border-radius:6px;font:inherit;font-weight:600;cursor:pointer}
+  .err{color:var(--bad);font-size:12px;margin-top:12px}
+</style></head><body><div class="wrap">
+<form method="POST" action="${setup ? 'setup' : 'login'}">
+  <h1>claude-mesh</h1>
+  <p>${setup ? 'Create the first account. It will be the admin.' : 'Sign in to view the mesh.'}</p>
+  <label for="u">username</label>
+  <input id="u" name="username" autocomplete="username" autofocus required>
+  <label for="p">password</label>
+  <input id="p" name="password" type="password"
+         autocomplete="${setup ? 'new-password' : 'current-password'}" required
+         ${setup ? 'minlength="8"' : ''}>
+  <button type="submit">${setup ? 'Create account' : 'Sign in'}</button>
+  ${error ? `<div class="err">${error}</div>` : ''}
+</form></div></body></html>`;
+}
+
 function page(token) {
   return `<!doctype html>
 <html lang="en"><head>
@@ -47,16 +90,16 @@ function page(token) {
 <header>
   <h1>claude-mesh</h1>
   <span class="dim" id="meta">loading…</span>
-  <span class="dim" style="margin-left:auto" id="tick"></span>
+  <span style="margin-left:auto"><a class="dim" href="logout">sign out</a></span>
 </header>
 <main id="out"></main>
 <script>
-const TOKEN = ${JSON.stringify(token || '')};
+const TOKEN = '';   // authenticated by the session cookie
 const ago = ms => { const s = Math.round(ms/1000);
   return s < 60 ? s+'s' : s < 3600 ? Math.round(s/60)+'m' : Math.round(s/3600)+'h'; };
 
 async function load(){
-  const h = TOKEN ? {'X-Mesh-Token': TOKEN} : {};
+  const h = {};       // cookie is sent automatically
   let peers = [], health = {};
   try {
     [peers, health] = await Promise.all([
@@ -111,4 +154,4 @@ load(); setInterval(load, 5000);
 </script></body></html>`;
 }
 
-module.exports = { page };
+module.exports = { page, loginPage };

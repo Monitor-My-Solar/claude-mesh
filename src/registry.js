@@ -10,6 +10,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID, timingSafeEqual } = require('crypto');
+const users = require('./users.js');
+const sess = require('./session.js');
+const ui = require('./ui.js');
 
 const STATE_FILE = process.env.MESH_STATE || '/var/lib/claude-mesh/state.json';
 
@@ -145,7 +148,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
     for (const w of [...waits]) w();
   };
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const started = Date.now();
     const reply = (code, obj) => {
       const b = Buffer.from(JSON.stringify(obj));
@@ -158,28 +161,71 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         console.log(`${code} ${req.method} ${req.url.split('?')[0]} from ${who} (${Date.now() - started}ms)`);
     };
     const isRedeem = req.method === 'POST' && req.url.startsWith('/join/redeem');
+    const path0 = new URL(req.url, 'http://localhost').pathname;
 
-    // The dashboard authenticates with ?token=..., since a browser cannot set
-    // a header on a plain navigation. It is read-only and serves the same data
-    // the CLI already exposes to any token holder.
-    const urlTok = new URL(req.url, 'http://localhost').searchParams.get('token');
-    const supplied = req.headers['x-mesh-token'] || urlTok;
+    // Two ways in: machines present the shared token; browsers sign in and get
+    // a session cookie, so no credential ever sits in a URL or browser history.
+    const cookies = sess.parseCookies(req.headers.cookie);
+    const who = sess.get(cookies.mesh_sid);
+    const secure = (req.headers['x-forwarded-proto'] || '') === 'https';
 
-    if (token && !isRedeem && !safeEqual(supplied, token))
+    const html = (code, body, extraHeaders = {}) => {
+      const b = Buffer.from(body);
+      res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8',
+                            'Content-Length': b.length, 'Cache-Control': 'no-store',
+                            ...extraHeaders });
+      res.end(b);
+    };
+    const redirect = (to, extraHeaders = {}) => {
+      res.writeHead(302, { Location: to, 'Cache-Control': 'no-store', ...extraHeaders });
+      res.end();
+    };
+    const readForm = () => new Promise((resolve) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; if (raw.length > 8192) req.destroy(); });
+      req.on('end', () => resolve(Object.fromEntries(new URLSearchParams(raw))));
+    });
+
+    // --- browser auth routes (no token required) ---------------------------
+    const PUBLIC = ['/login', '/setup', '/logout'];
+    if (PUBLIC.includes(path0)) {
+      const firstRun = users.count() === 0;
+      if (path0 === '/logout') {
+        sess.destroy(cookies.mesh_sid);
+        return redirect('login', { 'Set-Cookie': sess.cookie('', { secure, clear: true }) });
+      }
+      if (req.method === 'GET') {
+        if (firstRun && path0 !== '/setup') return redirect('setup');
+        if (!firstRun && path0 === '/setup') return redirect('login');
+        return html(200, ui.loginPage({ setup: firstRun }));
+      }
+      if (req.method === 'POST') {
+        const form = await readForm();
+        if (path0 === '/setup') {
+          if (!firstRun) return redirect('login');
+          try { users.create(form.username, form.password); }
+          catch (e) { return html(200, ui.loginPage({ setup: true, error: e.message })); }
+        }
+        const u = users.authenticate(form.username, form.password);
+        if (!u) return html(200, ui.loginPage({ setup: false, error: 'Invalid username or password' }));
+        return redirect('.', { 'Set-Cookie': sess.cookie(sess.create(u), { secure }) });
+      }
+    }
+
+    // --- dashboard ---------------------------------------------------------
+    if (path0 === '/' || path0 === '/ui') {
+      if (!who) return redirect(users.count() === 0 ? 'setup' : 'login');
+      return html(200, ui.page(''));
+    }
+
+    // --- everything else: a signed-in browser OR the shared token -----------
+    if (token && !isRedeem && !who && !safeEqual(req.headers['x-mesh-token'], token))
       return reply(401, { error: 'bad token' });
 
     const url = new URL(req.url, 'http://localhost');
     const q = url.searchParams;
 
     if (req.method === 'GET') {
-      if (url.pathname === '/' || url.pathname === '/ui') {
-        const body = Buffer.from(require('./ui.js').page(urlTok || ''));
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
-                             'Content-Length': body.length,
-                             'Cache-Control': 'no-store' });
-        return res.end(body);
-      }
-
       if (url.pathname === '/health') {
         prune();
         return reply(200, { ok: true, peers: peers.size, version: require('./version.js').full });
