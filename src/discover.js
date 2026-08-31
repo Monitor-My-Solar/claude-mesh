@@ -25,6 +25,21 @@ function slug(name) {
     .toLowerCase();
 }
 
+/**
+ * Read a session's peer token from its sibling <pid>.<hash>.key file. This is
+ * the same local credential Claude Code's own SendMessage uses to reach a peer
+ * on this machine; it never leaves the machine except to the mesh registry,
+ * which needs it to deliver into that session's inbox.
+ */
+function readPeerToken(files, pid) {
+  const key = files.find((f) => f.startsWith(`${pid}.`) && f.endsWith('.key'));
+  if (!key) return '';
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(SESSIONS, key), 'utf8'));
+    return d.peerToken || '';
+  } catch { return ''; }
+}
+
 function readSessionFiles() {
   let files = [];
   try { files = fs.readdirSync(SESSIONS); } catch { return []; }
@@ -45,6 +60,7 @@ function readSessionFiles() {
         kind: d.kind || '',
         version: d.version || '',
         updatedAt: Number(d.updatedAt || 0),
+        token: readPeerToken(files, d.pid),
       });
     } catch {}
   }

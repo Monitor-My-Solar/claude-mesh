@@ -57,6 +57,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const peers = new Map();   // name -> peer
   const bank  = new Map();   // name -> [msg]
   const waits = new Set();   // pending long-polls
+  const replies = new Map(); // request id -> reply message (awaiting collection)
 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
@@ -97,6 +98,34 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             .filter((p) => !group || p.group === group)
             .map(({ token, ...safe }) => safe),   // never expose inbox tokens
         });
+      }
+
+      // Block until a reply to `id` arrives, so a sender can ask a question and
+      // wait for the answer rather than polling.
+      if (url.pathname === '/await') {
+        const id = q.get('id');
+        if (!id) return reply(400, { error: 'id required' });
+        const waitMs = Math.min(Number(q.get('wait') || 60), 300) * 1000;
+
+        const take = () => {
+          const m = replies.get(id);
+          if (m) { replies.delete(id); return m; }
+          return null;
+        };
+        const first = take();
+        if (first) return reply(200, { reply: first });
+
+        const onTick = () => {
+          const got = take();
+          if (!got) return;
+          cleanup();
+          reply(200, { reply: got });
+        };
+        const timer = setTimeout(() => { cleanup(); reply(200, { reply: null, timeout: true }); }, waitMs);
+        const cleanup = () => { clearTimeout(timer); waits.delete(onTick); };
+        waits.add(onTick);
+        req.on('close', cleanup);
+        return;
       }
 
       if (url.pathname === '/routes') {
@@ -204,6 +233,13 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             body, ts: Date.now(),
           };
           qq.push(msg); bank.set(target, qq); wake();
+
+          // A message answering a request is also parked by request id, so the
+          // original sender can collect it without being a registered relay.
+          if (msg.re) {
+            replies.set(msg.re, msg);
+            wake();
+          }
           return reply(200, { ok: true, id: msg.id });
         }
         return reply(404, { error: 'not found' });

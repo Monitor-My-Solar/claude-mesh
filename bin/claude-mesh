@@ -20,6 +20,29 @@ async function api(path, conf, opts = {}) {
   return body;
 }
 
+
+/**
+ * Wait for a reply, polling in short hops. A single long request is simpler but
+ * dies against reverse proxies that cap read timeouts (a 504), so we ask for a
+ * bounded window repeatedly until the deadline.
+ */
+async function awaitReply(conf, id, totalSecs, hopSecs = 45) {
+  const deadline = Date.now() + totalSecs * 1000;
+  while (Date.now() < deadline) {
+    const left = Math.ceil((deadline - Date.now()) / 1000);
+    const hop = Math.max(5, Math.min(hopSecs, left));
+    let r;
+    try {
+      r = await api(`/await?id=${encodeURIComponent(id)}&wait=${hop}`, conf);
+    } catch (e) {
+      if (!/50\d/.test(e.message)) throw e;   // proxy hiccup: keep waiting
+      continue;
+    }
+    if (r.reply) return r.reply;
+  }
+  return null;
+}
+
 const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 
   claude-mesh configure [--ip HOST] [--port N] [--token T] [--group G] [--name N]
@@ -37,6 +60,10 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
        --now                     ask the receiver to surface it immediately
+       --wait [SECS]             block until the recipient replies (default 120)
+
+  claude-mesh ask --to [GROUP/]NAME --body QUESTION [--wait SECS]
+                                 send a question and print the answer (blocks)
                                  address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
 
@@ -180,7 +207,53 @@ async function main() {
       console.error("run 'claude-mesh peers' to see who is online");
       process.exit(1);
     }
-    return console.log(`queued ${j.id} -> ${to}`);
+    if (!has(rest, '--wait')) return console.log(`queued ${j.id} -> ${to}`);
+
+    // Block until the recipient replies with --re <this id>.
+    const secs = Number(arg(rest, '--wait', '120'));
+    process.stderr.write(`queued ${j.id} -> ${to}; waiting up to ${secs}s for a reply...\n`);
+    const got = await awaitReply(conf, j.id, secs);
+    if (!got) {
+      console.error(`no reply within ${secs}s (the message was delivered; the agent may be busy)`);
+      process.exit(2);
+    }
+    console.log(got.body);
+    return;
+  }
+
+  if (cmd === 'ask') {
+    // Send a question and block for the answer: the RPC form of send.
+    const to = arg(rest, '--to'), body = arg(rest, '--body');
+    if (!to || !body) { console.error('usage: claude-mesh ask --to NAME --body TEXT [--wait SECS]'); process.exit(1); }
+    const secs = Number(arg(rest, '--wait', '120'));
+    const selfSock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
+    const selfPid  = selfSock.match(/(\d+)\.sock$/)?.[1];
+    const me = require('../src/discover.js').localSessions().find((x) => x.socket === selfSock);
+    const selfName = conf.name || me?.slug || (selfPid ? String(selfPid) : '');
+
+    let j;
+    try {
+      j = await api('/send', conf, {
+        method: 'POST',
+        body: JSON.stringify({
+          to, body, from: selfName || 'unknown', intent: 'reply-needed',
+          group: conf.group, toGroup: arg(rest, '--group', ''),
+          priority: 'immediate',
+        }),
+      });
+    } catch (e) {
+      console.error(`claude-mesh: ${e.message}`);
+      console.error("run 'claude-mesh peers' to see who is online");
+      process.exit(1);
+    }
+    process.stderr.write(`asked ${to} (${j.id}); waiting up to ${secs}s...\n`);
+    const got = await awaitReply(conf, j.id, secs);
+    if (!got) {
+      console.error(`no reply within ${secs}s`);
+      process.exit(2);
+    }
+    console.log(got.body);
+    return;
   }
 
   console.error(`unknown command '${cmd}'\n`); console.log(HELP); process.exit(1);
