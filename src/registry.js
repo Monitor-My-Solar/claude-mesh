@@ -7,7 +7,11 @@
  * anywhere Node does.
  */
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { randomUUID, timingSafeEqual } = require('crypto');
+
+const STATE_FILE = process.env.MESH_STATE || '/var/lib/claude-mesh/state.json';
 
 /**
  * Resolve a recipient. Accepts a fully-qualified "group/name", a bare name when
@@ -62,6 +66,46 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const bank  = new Map();   // name -> [msg]
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
+
+  // Persist the roster and undelivered mail so a restart does not silently
+  // orphan every session and drop queued messages.
+  const persist = (() => {
+    let timer = null;
+    return () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        try {
+          fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+          const tmp = STATE_FILE + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify({
+            v: 1,
+            savedAt: Date.now(),
+            peers: [...peers.values()],
+            bank: [...bank.entries()],
+          }), { mode: 0o600 });
+          fs.renameSync(tmp, STATE_FILE);      // atomic
+        } catch (e) {
+          console.error('[registry] state save failed:', e.message);
+        }
+      }, 1000).unref?.() ?? null;
+    };
+  })();
+
+  (function restore() {
+    let d;
+    try { d = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return; }
+    if (!d || d.v !== 1) return;
+    const cutoff = Date.now() - STALE_MS;
+    let kept = 0;
+    for (const p of d.peers || []) {
+      // Only restore peers that were fresh when we stopped; the relays will
+      // re-register anything still alive within a cycle anyway.
+      if (p.seen > cutoff) { peers.set(p.name, p); kept++; }
+    }
+    for (const [k, v] of d.bank || []) if (Array.isArray(v) && v.length) bank.set(k, v);
+    console.log(`[registry] restored ${kept} peer(s), ${[...bank.values()].flat().length} queued message(s)`);
+  })();
 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
@@ -205,11 +249,13 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             seen:   Date.now(),
           });
           wake();
+          persist();
           return reply(200, { ok: true, name });
         }
 
         if (url.pathname === '/deregister') {
           peers.delete(String(d.name || '').trim());
+          persist();
           return reply(200, { ok: true });
         }
 
@@ -244,6 +290,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             replies.set(msg.re, msg);
             wake();
           }
+          persist();
           return reply(200, { ok: true, id: msg.id });
         }
         return reply(404, { error: 'not found' });

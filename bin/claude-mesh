@@ -71,6 +71,8 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 
   claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
   claude-mesh relay                              run this machine's relay daemon
+  claude-mesh service                            install the relay as a user service
+                                                 (systemd --user / launchd)
   claude-mesh peers [--group G]                  who is online (all groups by default)
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
@@ -135,6 +137,15 @@ async function main() {
                     '       straight into idle sessions instead of waiting for approval');
       console.log('New sessions will register automatically; existing ones on next start.');
     }
+    return;
+  }
+
+  if (cmd === 'service') {
+    const r = require('../src/install.js').installService();
+    console.log(`wrote ${r.file}`);
+    console.log('\nenable it with:\n  ' + r.start);
+    if (r.platform === 'linux')
+      console.log('\nto survive logout:  sudo loginctl enable-linger $USER');
     return;
   }
 

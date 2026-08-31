@@ -62,4 +62,61 @@ function uninstall() {
   return { removed, settingsPath: SETTINGS };
 }
 
-module.exports = { install, uninstall, SETTINGS };
+/**
+ * Install the relay as a user service so a machine stays reachable across
+ * reboots. Without this the relay is a terminal someone has to remember to
+ * start, and a machine silently drops off the mesh when it is closed.
+ */
+function installService({ dryRun = false } = {}) {
+  const bin = path.join(__dirname, '..', 'bin', 'claude-mesh');
+  const node = process.execPath;
+
+  if (process.platform === 'darwin') {
+    const label = 'dev.claude-mesh.relay';
+    const dir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    const file = path.join(dir, `${label}.plist`);
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>${node}</string><string>${bin}</string><string>relay</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${path.join(os.homedir(), 'Library/Logs/claude-mesh-relay.log')}</string>
+  <key>StandardErrorPath</key><string>${path.join(os.homedir(), 'Library/Logs/claude-mesh-relay.log')}</string>
+</dict></plist>
+`;
+    if (!dryRun) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, plist);
+    }
+    return { platform: 'darwin', file, label,
+             start: `launchctl unload ${file} 2>/dev/null; launchctl load -w ${file}` };
+  }
+
+  const dir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const file = path.join(dir, 'claude-mesh-relay.service');
+  const unit = `[Unit]
+Description=claude-mesh relay
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${node} ${bin} relay
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+`;
+  if (!dryRun) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, unit);
+  }
+  return { platform: 'linux', file,
+           start: 'systemctl --user daemon-reload && systemctl --user enable --now claude-mesh-relay' };
+}
+
+module.exports = { install, uninstall, installService, SETTINGS };
