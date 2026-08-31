@@ -103,9 +103,10 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         const relay = q.get('relay');
         if (!relay) return reply(400, { error: 'relay required' });
         prune();
+        const want = relay.toLowerCase();
         return reply(200, {
           routes: [...peers.values()]
-            .filter((p) => p.relay === relay)
+            .filter((p) => String(p.relay).toLowerCase() === want)
             .map((p) => ({ name: p.name, socket: p.socket, token: p.token })),
         });
       }
@@ -119,7 +120,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           prune();
           const out = [];
           for (const [n, p] of peers) {
-            if (p.relay !== relay) continue;
+            if (String(p.relay).toLowerCase() !== relay.toLowerCase()) continue;
             const qq = bank.get(n);
             if (qq && qq.length) { out.push(...qq); bank.delete(n); }
           }
@@ -159,11 +160,11 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           if (!name) return reply(400, { error: 'name required' });
           peers.set(name, {
             name,
-            group:  d.group  || 'default',
+            group:  String(d.group || 'default').toLowerCase(),
             host:   d.host   || '',
             cwd:    d.cwd    || '',
             socket: d.socket || '',
-            relay:  d.relay  || '',
+            relay:  String(d.relay || '').toLowerCase(),
             token:  d.token  || '',
             sessionId: d.sessionId || '',
             seen:   Date.now(),
@@ -188,9 +189,14 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           const target = resolved.name;
           const qq = bank.get(target) || [];
           if (qq.length >= MAX_BANK) return reply(429, { error: 'recipient bank full' });
+          // Resolve the sender to a registered address so REPLY is actionable.
+          const senderHit = resolveTarget(peers, String(d.from || ''), d.group);
           const msg = {
             id: randomUUID().slice(0, 12),
-            to: target, from: d.from || 'unknown', group: d.group || 'default',
+            to: target,
+            from: d.from || 'unknown',
+            fromAddr: senderHit.error ? '' : `${peers.get(senderHit.name)?.group}/${senderHit.name}`,
+            group: d.group || 'default',
             intent: d.intent || 'inform', re: d.re || '',
             body, ts: Date.now(),
           };

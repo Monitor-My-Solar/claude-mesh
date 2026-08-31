@@ -19,7 +19,7 @@ process.stdin.on('end', async () => {
 
   const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
   const pid  = sock.match(/(\d+)\.sock$/)?.[1] || String(process.ppid);
-  const name = cfg.name || `${RELAY_ID}/${pid}`;
+  const name = cfg.name || String(pid);
 
   const headers = { 'Content-Type': 'application/json', ...(TOKEN ? { 'X-Mesh-Token': TOKEN } : {}) };
   let roster = [];

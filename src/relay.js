@@ -53,11 +53,15 @@ async function announce() {
 }
 
 function envelopeFor(m) {
+  // Prefer the sender's resolvable address: --from is a free-text label and may
+  // not name a registered peer, in which case a REPLY built from it fails.
+  const replyTo = m.fromAddr || m.from;
   const head = [
-    `FROM: ${m.from}`,
+    `FROM: ${m.from}${m.fromAddr && m.fromAddr !== m.from ? ` (${m.fromAddr})` : ''}`,
     `INTENT: ${m.intent}`,
     ...(m.re ? [`RE: ${m.re}`] : []),
-    `REPLY: claude-mesh send --to ${m.from} --re ${m.id}`,
+    ...(m.fromAddr ? [`REPLY: claude-mesh send --to ${replyTo} --re ${m.id}`]
+                   : ['REPLY: (sender is not a registered peer; run `claude-mesh peers`)']),
   ].join('\n');
   return `${head}\n\n${m.body}`;
 }
