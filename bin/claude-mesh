@@ -153,6 +153,12 @@ async function main() {
 
   if (cmd === 'send') {
     const to = arg(rest, '--to'), body = arg(rest, '--body');
+    // Default --from to THIS session's registered name, derived from the inbox
+    // socket, so a reply address is always resolvable. Guessing a label (or
+    // using a stale pid from an earlier session) yields an unaddressable REPLY.
+    const selfSock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
+    const selfPid  = selfSock.match(/(\d+)\.sock$/)?.[1];
+    const selfName = conf.name || (selfPid ? `${conf.group}/${selfPid}` : '');
     if (!to || !body) { console.error('usage: claude-mesh send --to NAME --body TEXT'); process.exit(1); }
     let j;
     try {
@@ -160,7 +166,7 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({
         to, body,
-        from:    arg(rest, '--from', conf.name || `${conf.group}/${process.pid}`),
+        from:    arg(rest, '--from', selfName || 'unknown'),
         intent:  arg(rest, '--intent', 'inform'),
         re:      arg(rest, '--re', ''),
         group:   conf.group,                    // sender's group
