@@ -27,6 +27,8 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
                                  SessionStart/SessionEnd hooks into Claude Code
       --gen-token                generate a fresh 32-byte token
       --no-hooks                 config only, don't touch settings.json
+      --accept-inbound           set crossSessionInbound=accept, so peer messages
+                                 reach idle sessions without waiting for approval
       --uninstall                remove the mesh hooks again
 
   claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
@@ -83,8 +85,12 @@ async function main() {
     }
 
     if (!has(rest, '--no-hooks')) {
-      const r = require('../src/install.js').install();
+      const r = require('../src/install.js').install({ acceptInbound: has(rest, '--accept-inbound') });
       console.log(`hooks installed into ${r.settingsPath} (backup: .mesh-backup)`);
+      console.log(`crossSessionInbound: ${r.crossSessionInbound}`);
+      if (r.crossSessionInbound !== 'accept')
+        console.log('  tip: re-run with --accept-inbound so mesh messages are delivered\n' +
+                    '       straight into idle sessions instead of waiting for approval');
       console.log('New sessions will register automatically; existing ones on next start.');
     }
     return;

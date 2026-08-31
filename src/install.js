@@ -22,9 +22,14 @@ const entry = (script) => ({
 const isMesh = (e) =>
   JSON.stringify(e).includes(MARK) || (e.hooks || []).some((h) => String(h.command || '').includes(MARK));
 
-function install({ dryRun = false } = {}) {
+function install({ dryRun = false, acceptInbound = false } = {}) {
   let settings = {};
   try { settings = JSON.parse(fs.readFileSync(SETTINGS, 'utf8')); } catch {}
+
+  // Without this, some permission modes HOLD an inbound peer message for the
+  // user to approve instead of delivering it, so a mesh message can sit unseen
+  // in an idle session. Opt-in, because it lets any peer start a turn here.
+  if (acceptInbound) settings.crossSessionInbound = 'accept';
 
   settings.hooks ||= {};
   for (const [event, script] of [['SessionStart', 'session-start.js'], ['SessionEnd', 'session-end.js']]) {
@@ -37,7 +42,8 @@ function install({ dryRun = false } = {}) {
     if (fs.existsSync(SETTINGS)) fs.copyFileSync(SETTINGS, SETTINGS + '.mesh-backup');
     fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2) + '\n');
   }
-  return { settingsPath: SETTINGS, hooks: Object.keys(settings.hooks) };
+  return { settingsPath: SETTINGS, hooks: Object.keys(settings.hooks),
+           crossSessionInbound: settings.crossSessionInbound || '(unset)' };
 }
 
 function uninstall() {
