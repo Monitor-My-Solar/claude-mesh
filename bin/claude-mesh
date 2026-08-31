@@ -16,8 +16,23 @@ async function api(path, conf, opts = {}) {
     ...opts,
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `${res.status} ${path}`);
+  if (!res.ok) {
+    const e = new Error(body.error || `${res.status} ${path}`);
+    if (body.online) e.online = body.online;
+    if (body.candidates) e.candidates = body.candidates;
+    throw e;
+  }
   return body;
+}
+
+/** Print a failed address alongside who is actually reachable. */
+function reportUnreachable(e) {
+  console.error(`claude-mesh: ${e.message}`);
+  if (e.candidates?.length) console.error(`  did you mean: ${e.candidates.join(', ')}`);
+  if (e.online) {
+    console.error(e.online.length ? '  online now:' : '  nothing is online right now.');
+    for (const o of e.online) console.error(`    ${o}`);
+  }
 }
 
 
@@ -203,8 +218,7 @@ async function main() {
       }),
       });
     } catch (e) {
-      console.error(`claude-mesh: ${e.message}`);
-      console.error("run 'claude-mesh peers' to see who is online");
+      reportUnreachable(e);
       process.exit(1);
     }
     if (!has(rest, '--wait')) return console.log(`queued ${j.id} -> ${to}`);
@@ -242,8 +256,7 @@ async function main() {
         }),
       });
     } catch (e) {
-      console.error(`claude-mesh: ${e.message}`);
-      console.error("run 'claude-mesh peers' to see who is online");
+      reportUnreachable(e);
       process.exit(1);
     }
     process.stderr.write(`asked ${to} (${j.id}); waiting up to ${secs}s...\n`);

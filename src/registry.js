@@ -34,7 +34,11 @@ function resolveTarget(peers, to, toGroup) {
   if (hits.length === 1) return { name: hits[0].name };
   if (hits.length > 1) return { error: `ambiguous '${to}' - qualify it as group/name`, candidates: hits.map((p) => p.name) };
 
-  return { error: `unknown peer '${to}'`, known: all.map((p) => `${p.group}/${p.name}`) };
+  return {
+    error: `unknown peer '${to}' - it is not registered, so no spelling of the ` +
+           'address will route to it; its relay is probably not running',
+    online: all.map((p) => `${p.group}/${p.name}${p.status ? ` [${p.status}]` : ''}`),
+  };
 }
 
 /** Constant-time string compare, so the token can't be recovered by timing. */

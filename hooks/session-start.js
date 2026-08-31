@@ -50,17 +50,21 @@ process.stdin.on('end', async () => {
   }
 
   const lines = roster.length
-    ? roster.map((p) => `  - ${p.name} (${p.host}${p.cwd ? `, ${p.cwd}` : ''})`).join('\n')
-    : '  (no other agents online)';
+    ? roster.map((p) => `  - ${p.group}/${p.name}${p.status ? ` [${p.status}]` : ''}` +
+                        `${p.cwd ? ` - ${p.cwd}` : ''}`).join('\n')
+    : '  (none online right now)';
 
   const context = [
-    `You are on the claude-mesh as "${name}" in group "${GROUP}".`,
+    `You are on the claude-mesh as "${GROUP}/${name}".`,
     '',
-    'Other agents online:',
+    `Other agents, AS OF SESSION START (${new Date().toISOString()}) - this list goes`,
+    'stale quickly. ALWAYS run `claude-mesh peers` before addressing anyone; do not',
+    'trust the names below and never retry variations of an address that failed.',
     lines,
     '',
-    'To message one:  claude-mesh send --to <name> --body "<text>" [--intent request|inform|reply-needed|fyi]',
-    'Messages arrive as <cross-session-message> with FROM / INTENT / REPLY lines; reply with the REPLY command.',
+    'Send:  claude-mesh send --to <group>/<name> --body "<text>" [--intent request|inform|fyi]',
+    'Ask (blocks for the answer):  claude-mesh ask --to <group>/<name> --body "<question>"',
+    'Incoming messages carry FROM / INTENT / REPLY lines; reply with the REPLY command verbatim.',
   ].join('\n');
 
   process.stdout.write(JSON.stringify({
