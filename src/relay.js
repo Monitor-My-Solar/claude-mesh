@@ -207,7 +207,10 @@ async function main() {
     } catch (e) {
       console.error('[relay] poll error:', e.message);
       await new Promise((r) => setTimeout(r, backoff));
-      backoff = Math.min(backoff * 2, 30_000);   // back off, but always retry
+      // Cap the backoff well under the registry's staleness window: a restart
+      // is a few seconds of 502s, and backing off for half a minute leaves the
+      // whole mesh looking stale long after the registry is healthy again.
+      backoff = Math.min(backoff * 2, 8_000);
     }
   }
 }
