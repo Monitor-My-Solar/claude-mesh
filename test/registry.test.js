@@ -10,6 +10,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-test-'));
 process.env.MESH_STATE = path.join(tmp, 'state.json');
 process.env.MESH_USERS = path.join(tmp, 'users.json');
 process.env.MESH_TOKEN = TOKEN;
+process.env.MESH_ACK_TIMEOUT_MS = '1000';   // must be set before the require
 
 const { createRegistry } = require('../src/registry.js');
 
@@ -110,6 +111,51 @@ test('banks mail and drains it to the right relay', async () => {
   const again = await api('/inbox?relay=r1&wait=1');
   assert.ok(!again.body.messages.some((m) => m.body === 'queued-message'),
     'a drained message must not be delivered twice');
+});
+
+// Messages used to be deleted the moment a relay fetched them, so any failure
+// after that - no route yet, a socket write error, a relay crash - lost the
+// message silently.
+test('an unacked message is handed out again', async () => {
+  await register('acktest');
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'acktest', from: 'x', body: 'must-not-be-lost' }) });
+
+  const first = await api('/inbox?relay=r1&wait=1');
+  assert.ok(first.body.messages.some((m) => m.body === 'must-not-be-lost'));
+
+  // Do not ack, wait out the timeout, and it should come back.
+  await new Promise((r) => setTimeout(r, 1400));
+  const again = await api('/inbox?relay=r1&wait=2');
+  assert.ok(again.body.messages.some((m) => m.body === 'must-not-be-lost'),
+    'an unacked message must be redelivered');
+});
+
+test('an acked message is not handed out again', async () => {
+  await register('acktest2');
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'acktest2', from: 'x', body: 'deliver-once' }) });
+  const got = await api('/inbox?relay=r1&wait=1');
+  const msg = got.body.messages.find((m) => m.body === 'deliver-once');
+  assert.ok(msg, 'the message should be handed out');
+
+  await api('/ack', { method: 'POST', body: JSON.stringify({ ids: [msg.id] }) });
+  await new Promise((r) => setTimeout(r, 1400));
+  const again = await api('/inbox?relay=r1&wait=1');
+  assert.ok(!again.body.messages.some((m) => m.id === msg.id),
+    'an acked message must not be redelivered');
+});
+
+test('an explicit failure is requeued immediately', async () => {
+  await register('acktest3');
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'acktest3', from: 'x', body: 'retry-me' }) });
+  const got = await api('/inbox?relay=r1&wait=1');
+  const msg = got.body.messages.find((m) => m.body === 'retry-me');
+  await api('/ack', { method: 'POST', body: JSON.stringify({ ids: [], failed: [msg.id] }) });
+  const again = await api('/inbox?relay=r1&wait=2');
+  assert.ok(again.body.messages.some((m) => m.id === msg.id),
+    'a reported failure should be retried without waiting for the ack timeout');
 });
 
 test('rate-limits a sender to one peer', async () => {

@@ -143,63 +143,41 @@ function envelopeFor(m) {
 
 async function pump() {
   const { messages } = await api(`/inbox?relay=${encodeURIComponent(RELAY_ID)}&wait=25`);
+  if (!messages.length) return;
+
+  // Messages are on loan from the registry until acked. Anything we do not ack
+  // is handed out again, so a failed delivery is retried rather than lost.
+  const acked = [];
+  const failed = [];
+
   for (const m of messages) {
     const target = routes.get(m.to);
-    if (!target) {
-      console.error(`[relay] UNDELIVERED ${m.id}: no route for ${m.to} ` +
-                    '(is its SessionStart hook installed?)');
-      continue;
-    }
-    if (!target.token) {
-      console.error(`[relay] UNDELIVERED ${m.id}: no inbox token for ${m.to}`);
+    if (!target || !target.token) {
+      // The session may simply not have registered yet; let it be retried.
+      console.error(`[relay] cannot deliver ${m.id} to ${m.to} yet ` +
+                    `(${!target ? 'no route' : 'no inbox token'}) - will retry`);
+      failed.push(m.id);
       continue;
     }
     try {
       await deliver({
         socketPath: target.socket,
-        token: target.token,               // the recipient's own token
+        token: target.token,
         body: envelopeFor(m),
         fromName: `mesh:${m.from}`,
-        // 'immediate' asks the receiving session to surface the message as soon
-        // as it can rather than waiting for its next turn.
         priority: m.priority === 'immediate' ? 'immediate' : 'next',
       });
-      // The inbox socket never acknowledges, so a clean write is NOT proof of
-      // delivery — a frame with a stale token is dropped silently. Say so.
-      console.log(`[relay] wrote ${m.id} -> ${m.to} (unacknowledged by design)`);
+      acked.push(m.id);
+      console.log(`[relay] delivered ${m.id} -> ${m.to}`);
     } catch (e) {
-      console.error(`[relay] UNDELIVERED ${m.id} -> ${m.to}:`, e.message);
+      console.error(`[relay] delivery failed ${m.id} -> ${m.to}: ${e.message} - will retry`);
+      failed.push(m.id);
     }
   }
-}
 
-/**
- * Self-update: check the registry's version periodically and pull when this
- * machine is behind. Opt-out via MESH_AUTO_UPDATE=0 - some people will want to
- * pin a version, and silently changing code on someone's machine is a decision
- * they should be able to decline.
- */
-async function autoUpdate() {
-  if (process.env.MESH_AUTO_UPDATE === '0') return;
-  let health;
-  try { health = await api('/health'); } catch { return; }
-  if (!health.version || health.version === VERSION.full) return;
-
-  const { execSync } = require('child_process');
-  const root = VERSION.root;
-  if (!require('fs').existsSync(require('path').join(root, '.git'))) return;
-
-  console.log(`[relay] registry is ${health.version}, this machine is ${VERSION.full}: updating`);
-  try {
-    execSync('git fetch --quiet origin main && git reset --quiet --hard origin/main',
-             { cwd: root, stdio: 'ignore' });
-    const inst = require('./install.js');
-    inst.installSkill();
-    inst.install();
-    console.log('[relay] updated; restarting to pick up the new code');
-    process.exit(0);          // the service manager restarts us
-  } catch (e) {
-    console.error('[relay] self-update failed:', e.message);
+  if (acked.length || failed.length) {
+    await api('/ack', { method: 'POST', body: JSON.stringify({ ids: acked, failed }) })
+      .catch((e) => console.error('[relay] ack failed:', e.message));
   }
 }
 

@@ -60,6 +60,9 @@ const MAX_BANK  = Number(process.env.MESH_MAX_BANK  || 50);
 const MAX_BODY  = Number(process.env.MESH_MAX_BODY  || 16_384);
 // Per-sender limits. Messages become turns in a live session, so an agent loop
 // is not just noise - it burns the recipient's context and tokens.
+// How long a relay has to acknowledge a message before it is handed out again.
+const ACK_TIMEOUT_MS = Number(process.env.MESH_ACK_TIMEOUT_MS || 60_000);
+const MAX_ATTEMPTS   = Number(process.env.MESH_MAX_ATTEMPTS || 5);
 const RATE_WINDOW_MS = Number(process.env.MESH_RATE_WINDOW_MS || 60_000);
 const RATE_MAX       = Number(process.env.MESH_RATE_MAX       || 20);
 const PAIR_MAX       = Number(process.env.MESH_PAIR_MAX       || 10);
@@ -75,6 +78,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
   const rate = new Map();    // "from" and "from>to" -> [timestamps]
+  const inflight = new Map();// msg id -> {msg, relay, sentAt, attempts}
   const joins = new Map();   // join code -> {expires, uses}
 
   /**
@@ -115,6 +119,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             savedAt: Date.now(),
             peers: [...peers.values()],
             bank: [...bank.entries()],
+            inflight: [...inflight.entries()],
           }), { mode: 0o600 });
           fs.renameSync(tmp, STATE_FILE);      // atomic
         } catch (e) {
@@ -136,6 +141,12 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
       if (p.seen > cutoff) { peers.set(p.name, p); kept++; }
     }
     for (const [k, v] of d.bank || []) if (Array.isArray(v) && v.length) bank.set(k, v);
+    // Anything in flight when we stopped was never acked: put it back.
+    for (const [, rec] of d.inflight || []) {
+      if (!rec?.msg?.to) continue;
+      const q = bank.get(rec.msg.to) || [];
+      if (!q.some((m) => m.id === rec.msg.id)) { q.unshift(rec.msg); bank.set(rec.msg.to, q); }
+    }
     console.log(`[registry] restored ${kept} peer(s), ${[...bank.values()].flat().length} queued message(s)`);
   })();
 
@@ -159,6 +170,24 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const wake = () => {
     for (const w of [...waits]) w();
   };
+
+  /** Return un-acked messages to the bank so they are handed out again. */
+  function requeueExpired() {
+    const cutoff = Date.now() - ACK_TIMEOUT_MS;
+    for (const [id, rec] of inflight) {
+      if (rec.sentAt > cutoff) continue;
+      inflight.delete(id);
+      if (rec.attempts >= MAX_ATTEMPTS) {
+        console.log(`dropping ${id} -> ${rec.msg.to} after ${rec.attempts} attempts`);
+        continue;
+      }
+      const q = bank.get(rec.msg.to) || [];
+      if (q.some((m) => m.id === id)) continue;      // already back
+      q.unshift(rec.msg);                            // retry before newer mail
+      bank.set(rec.msg.to, q);
+      console.log(`requeued ${id} -> ${rec.msg.to} (attempt ${rec.attempts} unacked)`);
+    }
+  }
 
   const server = http.createServer(async (req, res) => {
     const started = Date.now();
@@ -302,11 +331,22 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
         const drain = () => {
           prune();
+          requeueExpired();
           const out = [];
           for (const [n, p] of peers) {
             if (String(p.relay).toLowerCase() !== relay.toLowerCase()) continue;
             const qq = bank.get(n);
             if (qq && qq.length) { out.push(...qq); bank.delete(n); }
+          }
+          // Messages are LENT to the relay, not given: they stay in flight
+          // until acked, so a delivery that fails or a relay that dies does
+          // not silently lose them.
+          for (const m of out) {
+            const prev = inflight.get(m.id);
+            inflight.set(m.id, {
+              msg: m, relay, sentAt: Date.now(),
+              attempts: (prev?.attempts || 0) + 1,
+            });
           }
           return out;
         };
@@ -386,6 +426,27 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           const code = randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase();
           joins.set(code, { expires: Date.now() + ttl * 1000, uses: Number(d.uses || 1) });
           return reply(200, { code, expires_in: ttl, uses: Number(d.uses || 1) });
+        }
+
+        if (url.pathname === '/ack') {
+          // A relay confirms it wrote the message into the target socket. Only
+          // then is the message finally discarded.
+          const ids = Array.isArray(d.ids) ? d.ids : [];
+          const failed = Array.isArray(d.failed) ? d.failed : [];
+          let acked = 0;
+          for (const id of ids) if (inflight.delete(id)) acked++;
+          // An explicit failure goes back to the bank immediately rather than
+          // waiting out the ack timeout.
+          for (const id of failed) {
+            const rec = inflight.get(id);
+            if (!rec) continue;
+            inflight.delete(id);
+            if (rec.attempts >= MAX_ATTEMPTS) continue;
+            const q = bank.get(rec.msg.to) || [];
+            if (!q.some((m) => m.id === id)) { q.unshift(rec.msg); bank.set(rec.msg.to, q); }
+          }
+          persist();
+          return reply(200, { ok: true, acked, requeued: failed.length });
         }
 
         if (url.pathname === '/send') {
