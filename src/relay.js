@@ -20,7 +20,13 @@ const headers = () => ({
 
 async function api(path, opts = {}) {
   const res = await fetch(REGISTRY + path, { headers: headers(), ...opts });
-  if (!res.ok) throw new Error(`${path} -> ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    // A proxy returns an HTML error page when the registry is restarting;
+    // dumping that into the log buries the real cause.
+    const raw = await res.text().catch(() => '');
+    const brief = raw.trim().startsWith('<') ? '(proxy error page)' : raw.slice(0, 200);
+    throw new Error(`${path} -> ${res.status} ${brief}`);
+  }
   return res.json();
 }
 
@@ -37,8 +43,23 @@ function sessionName(s) {
  * is what keeps the roster correct across /rename and busy/idle transitions,
  * since the SessionStart hook only fires once.
  */
+const lastSeenLocal = new Set();   // names we registered on the previous pass
+
 async function refreshLocal() {
-  for (const s of localSessions()) {
+  const live = localSessions();
+  const names = new Set(live.map(sessionName));
+
+  // Deregister sessions that have gone away, so the roster reflects reality
+  // rather than waiting out the registry's staleness window.
+  for (const gone of [...lastSeenLocal].filter((n) => !names.has(n))) {
+    await api('/deregister', { method: 'POST', body: JSON.stringify({ name: gone }) })
+      .then(() => console.log(`[relay] deregistered ${gone} (session ended)`))
+      .catch(() => {});
+    lastSeenLocal.delete(gone);
+  }
+
+  for (const s of live) {
+    lastSeenLocal.add(sessionName(s));
     await api('/register', {
       method: 'POST',
       body: JSON.stringify({
@@ -147,9 +168,16 @@ async function main() {
   const n = await announce();
   console.log(`[relay] registered ${n} session(s)`);
   setInterval(() => announce().catch(() => {}), 30_000);
+  let backoff = 1000;
   for (;;) {
-    try { await pump(); }
-    catch (e) { console.error('[relay] poll error:', e.message); await new Promise(r => setTimeout(r, 3000)); }
+    try {
+      await pump();
+      backoff = 1000;                       // healthy again
+    } catch (e) {
+      console.error('[relay] poll error:', e.message);
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, 30_000);   // back off, but always retry
+    }
   }
 }
 

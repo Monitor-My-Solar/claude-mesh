@@ -73,6 +73,8 @@ function readSessionFiles() {
  */
 function localSessions() {
   const self = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+  // Liveness is pid + socket, NOT updatedAt: an idle session can go hours
+  // without touching its file while remaining perfectly reachable.
   const fromFiles = readSessionFiles()
     .filter((s) => isAlive(s.pid) && fs.existsSync(s.socket))
     .map((s) => ({ ...s, slug: slug(s.name) || String(s.pid), self: s.socket === self }));
