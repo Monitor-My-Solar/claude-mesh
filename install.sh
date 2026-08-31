@@ -13,7 +13,21 @@ BRANCH="${MESH_BRANCH:-main}"
 APP="$HOME/.claude-mesh/app"
 BINDIR="${MESH_BINDIR:-$HOME/.local/bin}"
 
-REGISTRY=""; TOKEN=""; GROUP=""; RELAY_ID=""; NO_SERVICE=0
+REGISTRY=""; TOKEN=""; GROUP=""; RELAY_ID=""; NO_SERVICE=0; MODE=""
+
+# Interactive prompts need a real terminal. Piping the script through bash
+# leaves stdin as the pipe, so read from /dev/tty when one exists.
+TTY=""
+if [ -e /dev/tty ] && [ -r /dev/tty ]; then TTY=/dev/tty; fi
+
+ask() {  # ask <prompt> <default> -> echoes the answer
+  local prompt="$1" default="${2:-}" reply=""
+  if [ -z "$TTY" ]; then echo "$default"; return; fi
+  if [ -n "$default" ]; then printf '  %s [%s]: ' "$prompt" "$default" > "$TTY"
+  else printf '  %s: ' "$prompt" > "$TTY"; fi
+  read -r reply < "$TTY" || true
+  echo "${reply:-$default}"
+}
 
 die()  { printf '\nerror: %s\n' "$1" >&2; exit 1; }
 info() { printf '  %s\n' "$1"; }
@@ -25,6 +39,8 @@ while [ $# -gt 0 ]; do
     --group)         GROUP="${2:?--group needs a value}";       shift 2 ;;
     --relay-id)      RELAY_ID="${2:?--relay-id needs a value}"; shift 2 ;;
     --no-service)    NO_SERVICE=1; shift ;;
+    --server)        MODE="server"; shift ;;
+    --client)        MODE="client"; shift ;;
     -h|--help)
       sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -80,6 +96,40 @@ case ":$PATH:" in
   *) printf '\n  NOTE: %s is not on your PATH. Add it:\n    export PATH="%s:$PATH"\n' "$BINDIR" "$BINDIR" ;;
 esac
 
+# --- interactive setup ------------------------------------------------------
+# Ask only for what was not supplied on the command line, and only if there is
+# a terminal to ask on: an unattended install must never block.
+if [ -n "$TTY" ] && [ -z "$REGISTRY" ] && [ ! -f "$HOME/.claude-mesh/config.json" ]; then
+  printf '\n  This machine can either RUN the registry (one per network) or\n'
+  printf '  CONNECT to an existing one.\n\n'
+  if [ -z "$MODE" ]; then
+    case "$(ask 'Run the registry here? (y/N)' 'N')" in
+      [Yy]*) MODE="server" ;;
+      *)     MODE="client" ;;
+    esac
+  fi
+
+  if [ "$MODE" = "server" ]; then
+    PORT="$(ask 'Port to listen on' '8787')"
+    TOKEN="$(ask 'Shared token (blank to generate one)' '')"
+    if [ -z "$TOKEN" ]; then
+      TOKEN="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+      printf '\n  Generated token - every machine on this mesh needs it:\n\n    %s\n\n' "$TOKEN"
+      printf '  Save it now; it is not shown again.\n'
+      [ -n "$TTY" ] && { printf '  Press enter to continue. ' > "$TTY"; read -r _ < "$TTY" || true; }
+    fi
+    REGISTRY="http://127.0.0.1:$PORT"
+    RUN_SERVER=1
+  else
+    REGISTRY="$(ask 'Registry URL (e.g. https://mesh.example.com)' '')"
+    [ -n "$REGISTRY" ] || die "a registry URL is required"
+    TOKEN="$(ask 'Shared token' '')"
+    [ -n "$TOKEN" ] || die "the shared token is required"
+  fi
+  GROUP="${GROUP:-$(ask 'Name for this machine' "$(hostname -s 2>/dev/null || hostname)")}"
+  RELAY_ID="${RELAY_ID:-$GROUP}"
+fi
+
 # --- configure --------------------------------------------------------------
 CFG_ARGS=()
 [ -n "$REGISTRY" ] && CFG_ARGS+=(--ip "$REGISTRY")
@@ -109,6 +159,31 @@ else
   fi
 fi
 
-printf '\n'
+printf '\n  ------------------------------------------------------------\n'
 "$BINDIR/claude-mesh" status || true
-printf '\nDone. Name a session for its job with /rename, then: claude-mesh peers\n\n'
+printf '  ------------------------------------------------------------\n'
+
+if [ "${RUN_SERVER:-0}" = "1" ]; then
+  cat <<EOF
+
+  You chose to run the registry here. Start it with:
+
+    claude-mesh serve --port ${PORT:-8787} --bind 0.0.0.0
+
+  Keep it running (systemd, docker, tmux) and point other machines at it.
+  Other machines join with:
+
+    curl -fsSL https://raw.githubusercontent.com/Monitor-My-Solar/claude-mesh/main/install.sh | bash
+
+EOF
+else
+  cat <<'EOF'
+
+  Next:
+    /rename <job>          name a session for what it does (inside Claude Code)
+    claude-mesh peers      see who is online across the mesh
+    claude-mesh ask --to <group>/<name> --body "..."   ask another agent
+    claude-mesh update     pull the latest version
+
+EOF
+fi
