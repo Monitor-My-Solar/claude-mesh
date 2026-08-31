@@ -77,7 +77,12 @@ function localSessions() {
   // without touching its file while remaining perfectly reachable.
   const fromFiles = readSessionFiles()
     .filter((s) => isAlive(s.pid) && fs.existsSync(s.socket))
-    .map((s) => ({ ...s, slug: slug(s.name) || String(s.pid), self: s.socket === self }));
+    .map((s) => ({
+      ...s,
+      slug: slug(s.name) || String(s.pid),
+      named: s.nameSource === 'explicit',   // /rename'd, not derived from cwd
+      self: s.socket === self,
+    }));
 
   if (fromFiles.length) return fromFiles;
 

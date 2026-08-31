@@ -128,6 +128,9 @@ async function main() {
       console.error('  claude-mesh configure --token <token>\n');
     }
 
+    const sk = require('../src/install.js').installSkill();
+    console.log(`skill installed to ${sk.dst} (invoke with /mesh)`);
+
     if (!has(rest, '--no-hooks')) {
       const r = require('../src/install.js').install({ acceptInbound: has(rest, '--accept-inbound') });
       console.log(`hooks installed into ${r.settingsPath} (backup: .mesh-backup)`);
@@ -195,13 +198,21 @@ async function main() {
     }
     for (const [group, list] of [...byGroup].sort()) {
       console.log(`\n${group}`);
+      // Deliberately named sessions first, then most recently seen: an agent
+      // scanning this should meet the addressable ones at the top.
+      list.sort((a, b) => (b.named - a.named) || (b.seen - a.seen));
       for (const p of list) {
         const age = Math.round((Date.now() - p.seen) / 1000);
         const st = p.status ? p.status.padEnd(5) : '     ';
-        console.log(`  ${p.name.padEnd(30)} ${st}  ${(p.cwd || '-').padEnd(32)} ${age}s ago`);
+        const tag = p.named ? ' *' : '  ';
+        console.log(`  ${p.name.padEnd(30)}${tag}${st}  ${(p.cwd || '-').padEnd(32)} ${age}s ago`);
       }
     }
-    console.log(`\nAddress a peer as group/name, e.g. claude-mesh send --to ${peers[0].group}/${peers[0].name.replace(/^.*\//, '')} --body "..."`);
+    const named = peers.find((p) => p.named) || peers[0];
+    console.log(`\n* = deliberately named (via /rename); others are directory-derived.`);
+    console.log(`Address a peer as group/name, e.g.`);
+    console.log(`  claude-mesh send --to ${named.group}/${named.name} --body "..."`);
+    console.log(`  claude-mesh ask  --to ${named.group}/${named.name} --body "<question>"`);
     return;
   }
 

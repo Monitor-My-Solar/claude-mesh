@@ -66,7 +66,7 @@ async function refreshLocal() {
         name: sessionName(s), group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
         socket: s.socket, relay: RELAY_ID,
         sessionId: s.sessionId || '', status: s.status || '', pid: s.pid,
-        token: s.token || '',
+        token: s.token || '', named: !!s.named,
       }),
     }).catch(() => {});
   }

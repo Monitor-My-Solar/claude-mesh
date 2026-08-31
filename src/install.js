@@ -67,6 +67,23 @@ function uninstall() {
  * reboots. Without this the relay is a terminal someone has to remember to
  * start, and a machine silently drops off the mesh when it is closed.
  */
+/**
+ * Link the mesh skill into ~/.claude/skills so sessions learn the conventions
+ * (naming, intents, etiquette) without any of it sitting in CLAUDE.md. A skill
+ * costs nothing until it is invoked.
+ */
+function installSkill({ dryRun = false } = {}) {
+  const src = path.join(__dirname, '..', 'skills', 'mesh');
+  const dstDir = path.join(os.homedir(), '.claude', 'skills');
+  const dst = path.join(dstDir, 'mesh');
+  if (!dryRun) {
+    fs.mkdirSync(dstDir, { recursive: true });
+    try { fs.rmSync(dst, { recursive: true, force: true }); } catch {}
+    fs.cpSync(src, dst, { recursive: true });
+  }
+  return { src, dst };
+}
+
 function installService({ dryRun = false } = {}) {
   const bin = path.join(__dirname, '..', 'bin', 'claude-mesh');
   const node = process.execPath;
@@ -119,4 +136,4 @@ WantedBy=default.target
            start: 'systemctl --user daemon-reload && systemctl --user enable --now claude-mesh-relay' };
 }
 
-module.exports = { install, uninstall, installService, SETTINGS };
+module.exports = { install, uninstall, installService, installSkill, SETTINGS };

@@ -245,6 +245,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             token:  d.token  || '',
             sessionId: d.sessionId || '',
             status: d.status || '',
+            named:  !!d.named,
             pid:    d.pid || null,
             seen:   Date.now(),
           });
