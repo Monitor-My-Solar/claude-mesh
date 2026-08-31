@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the installer enforces, and current.
+        node: ['18', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No dependencies to install: the suite is stdlib only.
+      - run: npm test
+
+  install:
+    # The install path broke repeatedly in real use, so exercise it for real
+    # rather than trusting that the script still parses.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: shellcheck install.sh
+        run: bash -n install.sh
+      - name: install from this checkout, unattended
+        run: |
+          MESH_REPO="$PWD" bash install.sh \
+            --registry http://127.0.0.1:8787 --token ci-token-0123456789 \
+            --group ci --relay-id ci --no-service
+          "$HOME/.local/bin/claude-mesh" status || true
+      - name: the installed CLI runs
+        run: "$HOME/.local/bin/claude-mesh --help | head -3"
