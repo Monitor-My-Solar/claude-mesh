@@ -124,9 +124,26 @@ LAUNCHER
 chmod +x "$BINDIR/claude-mesh"
 info "launcher $BINDIR/claude-mesh"
 
+# Persist BINDIR on PATH. A note is not enough: agents run in non-interactive
+# shells they did not configure, so a CLI that is only findable after a manual
+# export is a CLI they cannot use at all.
 case ":$PATH:" in
   *":$BINDIR:"*) ;;
-  *) printf '\n  NOTE: %s is not on your PATH. Add it:\n    export PATH="%s:$PATH"\n' "$BINDIR" "$BINDIR" ;;
+  *)
+    added=""
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+      [ -e "$rc" ] || continue
+      grep -qF "$BINDIR" "$rc" 2>/dev/null && { added="$rc"; continue; }
+      printf '\n# added by claude-mesh\nexport PATH="%s:$PATH"\n' "$BINDIR" >> "$rc"
+      added="$rc"
+    done
+    if [ -z "$added" ]; then
+      printf '\n# added by claude-mesh\nexport PATH="%s:$PATH"\n' "$BINDIR" >> "$HOME/.profile"
+      added="$HOME/.profile"
+    fi
+    info "added $BINDIR to PATH in $added"
+    printf '  %s(open a new shell, or: export PATH="%s:$PATH")%s\n' "$DIM" "$BINDIR" "$R"
+    ;;
 esac
 
 # --- interactive setup ------------------------------------------------------
