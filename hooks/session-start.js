@@ -26,10 +26,18 @@ process.stdin.on('end', async () => {
   // under its real name and has no idea the pid entry refers to it. Wait
   // briefly for the name, and if it never appears, leave registration to the
   // relay (which runs every 15s and always has the real name).
-  const { localSessions } = require('../src/discover.js');
+  // Identify this session among everything live on the machine. Claude Code
+  // is identified by its inbox socket; Codex sets no such variable, so match
+  // its thread id from the hook payload instead. Without this a Codex thread
+  // would adopt whichever Claude session happened to answer first.
+  const agents = require('../src/agents/index.js');
+  const sid = input.session_id || '';
   let me = null;
   for (let i = 0; i < 10 && !me; i++) {
-    me = localSessions().find((x) => x.socket === sock) || null;
+    const live = agents.allSessions();
+    me = (sock && live.find((x) => x.route?.socket === sock))
+      || (sid && live.find((x) => x.id === sid))
+      || null;
     if (!me) await new Promise((r) => setTimeout(r, 200));
   }
   const name = cfg.name || me?.slug;
@@ -49,12 +57,14 @@ process.stdin.on('end', async () => {
         // The session volunteers its own inbox token: only code running INSIDE
         // the session can read it, so registering is an explicit opt-in to
         // being addressable. The relay cannot obtain this any other way.
-        token: process.env.CLAUDE_CODE_MESSAGING_TOKEN || '',
+        kind: me?.kind || 'claude',
+        route: me?.route || null,
+        token: me?.route?.token || process.env.CLAUDE_CODE_MESSAGING_TOKEN || '',
         // Report the version here too: a session registered by the hook rather
         // than by a relay would otherwise show as an unknown version forever.
         version: require('../src/version.js').full,
         named: me?.named || false,
-        sessionId: input.session_id || me?.sessionId || '',
+        sessionId: input.session_id || me?.id || '',
         status: me?.status || '',
         pid: Number(pid) || null,
       }),
