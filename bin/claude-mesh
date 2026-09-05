@@ -2,6 +2,8 @@
 'use strict';
 /** claude-mesh — inter-agent messaging for Claude Code sessions. */
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { randomBytes } = require('crypto');
 const cfg = require('../src/config.js');
 const { localSessions } = require('../src/discover.js');
@@ -88,8 +90,9 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
   claude-mesh serve [--port N] [--bind ADDR]     run the registry (on your server)
   claude-mesh relay                              run this machine's relay daemon
   claude-mesh service                            install + start the relay service
-  claude-mesh upgrade                            refresh hooks, skill and service
-                                                 without pulling (keeps config)
+  claude-mesh update [--main] [--ref TAG]        pull the latest release, refresh
+                                                 hooks/skill/service, keep config
+                                                 ('upgrade' is the same command)
   claude-mesh peers [--group G]                  who is online (all groups by default)
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
@@ -108,7 +111,11 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 Config precedence: env (MESH_*) > ~/.claude-mesh/config.json > defaults.`;
 
 async function main() {
-  const [cmd, ...rest] = process.argv.slice(2);
+  let [cmd, ...rest] = process.argv.slice(2);
+  // 'upgrade' shipped first and only refreshed hooks, reporting success while
+  // leaving the machine on old code - which is how a machine gets stranded
+  // without whatever command would have fixed it. Same command now.
+  if (cmd === 'upgrade') cmd = 'update';
   const conf = cfg.load();
 
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help' || has(rest, '--help'))
@@ -175,16 +182,56 @@ async function main() {
     return;
   }
 
-  if (cmd === 'upgrade') {
-    // Refresh everything that ships with the package, reusing existing config.
+  if (cmd === 'update') {
+    const { execSync } = require('child_process');
+    const appDir = path.resolve(__dirname, '..');
+
+    // No git checkout (an older layout, or npm): hand it to the installer,
+    // which is fetched fresh every time and knows how to migrate what is there.
+    if (!fs.existsSync(path.join(appDir, '.git'))) {
+      console.log('no git checkout here - running the installer (config is kept)');
+      const flag = has(rest, '--main') ? ' -s -- --main' : '';
+      try {
+        execSync('curl -fsSL https://raw.githubusercontent.com/Monitor-My-Solar/claude-mesh/main/install.sh | bash' + flag,
+                 { stdio: 'inherit' });
+      } catch {
+        console.error('claude-mesh: the installer failed; run it by hand:');
+        console.error('  curl -fsSL https://raw.githubusercontent.com/Monitor-My-Solar/claude-mesh/main/install.sh | bash');
+        process.exit(1);
+      }
+      return;
+    }
+
+    const describe = () => {
+      try { return execSync('git describe --tags --always', { cwd: appDir }).toString().trim(); }
+      catch { return '?'; }
+    };
+    const before = describe();
+    try {
+      execSync('git fetch --quiet --tags --force origin main', { cwd: appDir, stdio: 'ignore' });
+      let target = arg(rest, '--ref', '');
+      if (!target) {
+        if (has(rest, '--main') || process.env.MESH_CHANNEL === 'main') target = 'origin/main';
+        else {
+          const tags = execSync("git tag -l 'v*' --sort=-v:refname", { cwd: appDir })
+            .toString().trim().split('\n').filter(Boolean);
+          target = tags[0] || 'origin/main';
+        }
+      }
+      execSync(`git reset --quiet --hard ${target}`, { cwd: appDir, stdio: 'ignore' });
+    } catch {
+      console.error('claude-mesh: could not fetch updates (no network, or local changes).');
+      process.exit(1);
+    }
+    const after = describe();
+    console.log(before === after ? `already up to date (${after})` : `updated ${before} -> ${after}`);
+
     const inst = require('../src/install.js');
-    const sk = inst.installSkill();
-    console.log(`skill  -> ${sk.dst}`);
+    inst.installSkill();
     inst.install();
-    console.log(`hooks  -> ${inst.SETTINGS}`);
     const sv = inst.applyService();
-    console.log(`service-> ${sv.file}${sv.ok ? ' (restarted)' : ' (start it manually)'}`);
-    console.log(`config   ${cfg.FILE} (unchanged: ${conf.registry})`);
+    console.log(`refreshed hooks, skill and service${sv.ok ? ' (relay restarted)' : ''}`);
+    console.log(`config kept: ${conf.registry}`);
     return;
   }
 
