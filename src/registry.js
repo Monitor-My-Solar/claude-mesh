@@ -280,7 +280,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         return reply(200, {
           peers: [...peers.values()]
             .filter((p) => !group || p.group === group)
-            .map(({ token, ...safe }) => safe),   // never expose inbox tokens
+            .map(({ token, route, ...safe }) => safe),   // routes carry inbox tokens
         });
       }
 
@@ -394,6 +394,9 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             status: d.status || '',
             named:  !!d.named,
             version: d.version || '',
+            // Which agent this session is, and how its own relay reaches it.
+            kind:   d.kind || 'claude',
+            route:  d.route || (d.socket ? { socket: d.socket, token: d.token || '' } : null),
             pid:    d.pid || null,
             seen:   Date.now(),
           });

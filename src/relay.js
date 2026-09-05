@@ -7,8 +7,9 @@
  * session's inbox socket. Delivery costs no model inference.
  */
 const os = require('os');
-const { deliver, isAlive } = require('./peer.js');
+const { isAlive } = require('./peer.js');
 const { localSessions } = require('./discover.js');
+const agents = require('./agents/index.js');
 
 const VERSION = require('./version.js');
 const cfg = require('./config.js').load();
@@ -47,8 +48,8 @@ function sessionName(s) {
 const lastSeenLocal = new Set();   // names we registered on the previous pass
 
 async function refreshLocal() {
-  const live = localSessions();
-  const names = new Set(live.map(sessionName));
+  const live = agents.allSessions();
+  const names = new Set(live.map((s) => s.slug));
 
   // Deregister sessions that have gone away, so the roster reflects reality
   // rather than waiting out the registry's staleness window.
@@ -60,14 +61,18 @@ async function refreshLocal() {
   }
 
   for (const s of live) {
-    lastSeenLocal.add(sessionName(s));
+    lastSeenLocal.add(s.slug);
     await api('/register', {
       method: 'POST',
       body: JSON.stringify({
-        name: sessionName(s), group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
-        socket: s.socket, relay: RELAY_ID,
-        sessionId: s.sessionId || '', status: s.status || '', pid: s.pid,
-        token: s.token || '', named: !!s.named, version: VERSION.full,
+        name: s.slug, group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
+        relay: RELAY_ID, sessionId: s.id || '', status: s.status || '',
+        pid: s.pid, named: !!s.named, version: VERSION.full,
+        // How this machine's relay reaches the session. Kind selects the
+        // delivery adapter; route is opaque to everyone but that adapter.
+        kind: s.kind, route: s.route,
+        // Kept for older registries that still expect these at the top level.
+        socket: s.route?.socket || '', token: s.route?.token || '',
       }),
     }).catch(() => {});
   }
@@ -99,7 +104,7 @@ async function announce() {
     // resurrects a session we deliberately deregistered a moment earlier,
     // and an ended session never leaves the roster.
     const known = new Set(rows.map((r) => r.name));
-    const liveNames = new Set(localSessions().map(sessionName));
+    const liveNames = new Set(agents.allSessions().map((s) => s.slug));
     for (const [name, r] of routes) {
       if (known.has(name)) continue;
       if (!liveNames.has(name)) { routes.delete(name); continue; }
@@ -152,20 +157,23 @@ async function pump() {
 
   for (const m of messages) {
     const target = routes.get(m.to);
-    if (!target || !target.token) {
+    const kind = target?.kind || 'claude';
+    const adapter = agents.adapterFor(kind);
+    const route = target?.route || { socket: target?.socket, token: target?.token };
+
+    if (!target || !adapter.canDeliver(route)) {
       // The session may simply not have registered yet; let it be retried.
       console.error(`[relay] cannot deliver ${m.id} to ${m.to} yet ` +
-                    `(${!target ? 'no route' : 'no inbox token'}) - will retry`);
+                    `(${!target ? 'no route' : `${kind} route not usable`}) - will retry`);
       failed.push(m.id);
       continue;
     }
     try {
-      await deliver({
-        socketPath: target.socket,
-        token: target.token,
+      await adapter.send({
+        route,
         body: envelopeFor(m),
         fromName: `mesh:${m.from}`,
-        priority: m.priority === 'immediate' ? 'immediate' : 'next',
+        priority: m.priority,
       });
       acked.push(m.id);
       console.log(`[relay] delivered ${m.id} -> ${m.to}`);
