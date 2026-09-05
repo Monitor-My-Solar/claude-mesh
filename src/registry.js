@@ -320,7 +320,12 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         return reply(200, {
           routes: [...peers.values()]
             .filter((p) => String(p.relay).toLowerCase() === want)
-            .map((p) => ({ name: p.name, socket: p.socket, token: p.token })),
+            // kind selects the delivery adapter; route is opaque to all
+            // but that adapter, and only ever goes to the owning relay.
+            .map((p) => ({ name: p.name, kind: p.kind || 'claude',
+                           route: p.route || (p.socket ? { socket: p.socket, token: p.token || '' } : null),
+                           socket: p.socket, token: p.token,
+                           sessionId: p.sessionId, cwd: p.cwd })),
         });
       }
 
