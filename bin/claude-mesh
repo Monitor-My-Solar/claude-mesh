@@ -34,11 +34,25 @@ async function api(path, conf, opts = {}) {
  */
 function selfAddress(conf) {
   if (conf.name) return conf.name;
-  const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
-  if (!sock) return '';
   try {
-    const me = require('../src/discover.js').localSessions().find((x) => x.socket === sock);
-    if (me?.slug) return `${conf.group}/${me.slug}`;
+    const live = require('../src/agents/index.js').allSessions();
+
+    // Claude Code identifies itself by its inbox socket.
+    const sock = process.env.CLAUDE_CODE_MESSAGING_SOCKET || '';
+    if (sock) {
+      const me = live.find((x) => x.route?.socket === sock);
+      if (me?.slug) return `${conf.group}/${me.slug}`;
+    }
+
+    // Codex identifies its thread in the environment of commands it runs.
+    // Without this every Codex send was addressed as group/cli and the
+    // recipient had nobody to reply to; cwd is not usable, because several
+    // threads commonly share one directory.
+    const thread = process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID || '';
+    if (thread) {
+      const me = live.find((x) => x.id === thread || x.route?.thread === thread);
+      if (me?.slug) return `${conf.group}/${me.slug}`;
+    }
   } catch {}
   return '';
 }
