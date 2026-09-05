@@ -354,7 +354,8 @@ async function main() {
         const age = Math.round((Date.now() - p.seen) / 1000);
         const st = p.status ? p.status.padEnd(5) : '     ';
         const tag = p.named ? ' *' : '  ';
-        console.log(`  ${p.name.padEnd(30)}${tag}${st}  ${(p.cwd || '-').padEnd(32)} ${age}s ago`);
+        const kind = (p.kind || 'claude').padEnd(6);
+        console.log(`  ${p.name.padEnd(30)}${tag}${kind} ${st}  ${(p.cwd || '-').padEnd(30)} ${age}s ago`);
       }
     }
     const named = peers.find((p) => p.named) || peers[0];

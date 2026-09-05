@@ -85,6 +85,30 @@ test('drops bare-pid orphans once the session is registered by name', async () =
   assert.ok(!peers.some((p) => p.name === '4242'), 'the pid orphan should be pruned');
 });
 
+// A Codex route has a thread id and no socket; testing for a socket anywhere
+// in the path silently discards every non-Claude session.
+test('carries kind and route for non-Claude agents', async () => {
+  await register('codex-one', { kind: 'codex', route: { thread: 'thread-uuid-1' }, socket: '', token: '' });
+  const { routes } = (await api('/routes?relay=r1')).body;
+  const row = routes.find((r) => r.name === 'codex-one');
+  assert.ok(row, 'a codex session should be routable');
+  assert.strictEqual(row.kind, 'codex');
+  assert.strictEqual(row.route.thread, 'thread-uuid-1');
+
+  const { peers } = (await api('/peers')).body;
+  const peer = peers.find((p) => p.name === 'codex-one');
+  assert.strictEqual(peer.kind, 'codex', 'peers should say what kind of agent this is');
+  assert.strictEqual(peer.route, undefined, 'a route can carry credentials and must not leak');
+});
+
+test('defaults kind to claude for older relays', async () => {
+  await register('legacy-one');
+  const { routes } = (await api('/routes?relay=r1')).body;
+  const row = routes.find((r) => r.name === 'legacy-one');
+  assert.strictEqual(row.kind, 'claude');
+  assert.ok(row.route.socket, 'a legacy registration should still yield a usable route');
+});
+
 test('deregisters a peer', async () => {
   await register('temp');
   await api('/deregister', { method: 'POST', body: JSON.stringify({ name: 'temp' }) });

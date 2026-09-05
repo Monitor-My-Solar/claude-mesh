@@ -90,9 +90,13 @@ async function announce() {
   try {
     const { routes: rows } = await api(`/routes?relay=${encodeURIComponent(RELAY_ID)}`);
     for (const r of rows) {
-      if (!r.socket || !r.token) continue;
-      const pid = Number.parseInt(String(r.socket).match(/(\d+)\.sock$/)?.[1] ?? '', 10);
-      routes.set(r.name, { ...r, pid: Number.isNaN(pid) ? null : pid });
+      // Usability is the adapter's judgement: a Claude route needs a socket and
+      // a token, a Codex route needs a thread id. Testing for a socket here
+      // silently discarded every non-Claude session.
+      const route = r.route || (r.socket ? { socket: r.socket, token: r.token || '' } : null);
+      if (!agents.adapterFor(r.kind || 'claude').canDeliver(route)) continue;
+      const pid = Number.parseInt(String(r.socket || '').match(/(\d+)\.sock$/)?.[1] ?? '', 10);
+      routes.set(r.name, { ...r, route, pid: Number.isNaN(pid) ? null : pid });
     }
 
     // Re-post anything the registry has forgotten. Registration normally happens
