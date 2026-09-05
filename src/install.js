@@ -73,15 +73,66 @@ function uninstall() {
  * costs nothing until it is invoked.
  */
 function installSkill({ dryRun = false } = {}) {
-  const src = path.join(__dirname, '..', 'skills', 'mesh');
-  const dstDir = path.join(os.homedir(), '.claude', 'skills');
-  const dst = path.join(dstDir, 'mesh');
-  if (!dryRun) {
-    fs.mkdirSync(dstDir, { recursive: true });
-    try { fs.rmSync(dst, { recursive: true, force: true }); } catch {}
-    fs.cpSync(src, dst, { recursive: true });
+  const installed = [];
+
+  // Claude Code, and Codex when it is present: same skill content, worded for
+  // each client's naming. A Codex session that cannot see the mesh commands
+  // can be delivered TO but can never reply or start a conversation.
+  const targets = [
+    { home: path.join(os.homedir(), '.claude'), src: path.join(__dirname, '..', 'skills', 'mesh') },
+    { home: codexHome(), src: path.join(__dirname, '..', 'skills-codex', 'mesh'), optional: true },
+  ];
+
+  for (const t of targets) {
+    if (t.optional && !fs.existsSync(t.home)) continue;
+    if (!fs.existsSync(t.src)) continue;
+    const dst = path.join(t.home, 'skills', 'mesh');
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      try { fs.rmSync(dst, { recursive: true, force: true }); } catch {}
+      fs.cpSync(t.src, dst, { recursive: true });
+    }
+    installed.push(dst);
   }
-  return { src, dst };
+  return { installed, dst: installed[0] };
+}
+
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+/**
+ * Register the mesh hooks with Codex. Codex uses the same hook events and the
+ * same stdin-JSON contract as Claude Code, so the hook scripts are shared; only
+ * the config file differs. Existing hooks are preserved.
+ */
+function installCodexHooks({ dryRun = false } = {}) {
+  const home = codexHome();
+  if (!fs.existsSync(home)) return { skipped: 'codex not installed' };
+
+  const file = path.join(home, 'hooks.json');
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  cfg.hooks ||= {};
+
+  const dir = path.join(__dirname, '..', 'hooks');
+  const entry = (script) => ({
+    hooks: [{ type: 'command', command: `node ${path.join(dir, script)}`, timeout: 10 }],
+  });
+  const isMesh = (e) => JSON.stringify(e).includes(MARK);
+
+  for (const [event, script] of [['SessionStart', 'session-start.js'], ['SessionEnd', 'session-end.js']]) {
+    const kept = (cfg.hooks[event] || []).filter((e) => !isMesh(e));
+    cfg.hooks[event] = [...kept, entry(script)];
+  }
+
+  if (!dryRun) {
+    if (fs.existsSync(file)) fs.copyFileSync(file, file + '.mesh-backup');
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+  }
+  // Codex trusts hooks by hash and skips changed ones until re-trusted, so an
+  // update needs the user to approve them again in Codex.
+  return { file, events: ['SessionStart', 'SessionEnd'], note: 'codex may ask you to re-trust these hooks' };
 }
 
 function installService({ dryRun = false } = {}) {
@@ -151,4 +202,4 @@ function applyService() {
   return { ...r, ran, ok: ran.length === (r.reload || []).length };
 }
 
-module.exports = { install, uninstall, installService, applyService, installSkill, SETTINGS };
+module.exports = { install, uninstall, installService, applyService, installSkill, installCodexHooks, codexHome, SETTINGS };

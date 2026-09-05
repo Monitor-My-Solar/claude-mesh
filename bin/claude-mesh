@@ -156,8 +156,14 @@ async function main() {
       console.error('  claude-mesh configure --token <token>\n');
     }
 
-    const sk = require('../src/install.js').installSkill();
-    console.log(`skill installed to ${sk.dst} (invoke with /mesh)`);
+    const instMod = require('../src/install.js');
+    const sk = instMod.installSkill();
+    for (const d of sk.installed) console.log(`skill  -> ${d}`);
+    const ch = instMod.installCodexHooks();
+    if (ch.file) {
+      console.log(`codex  -> ${ch.file} (${ch.events.join(', ')})`);
+      console.log(`          ${ch.note}`);
+    }
 
     if (!has(rest, '--no-hooks')) {
       const r = require('../src/install.js').install({ acceptInbound: has(rest, '--accept-inbound') });
@@ -229,6 +235,7 @@ async function main() {
     const inst = require('../src/install.js');
     inst.installSkill();
     inst.install();
+    inst.installCodexHooks();
     const sv = inst.applyService();
     console.log(`refreshed hooks, skill and service${sv.ok ? ' (relay restarted)' : ''}`);
     console.log(`config kept: ${conf.registry}`);
