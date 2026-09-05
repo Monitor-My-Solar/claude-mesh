@@ -75,6 +75,7 @@ printf '\n  %sclaude-mesh%s %sinter-agent messaging for Claude Code%s\n\n' "$B" 
 command -v git  >/dev/null 2>&1 || die "git is required"
 command -v node >/dev/null 2>&1 || die "node 18+ is required (https://nodejs.org)"
 
+NODE="$(command -v node)"
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$NODE_MAJOR" -ge 18 ] || die "node 18+ is required (found $(node --version))"
 info "node $(node --version)"
@@ -218,7 +219,15 @@ if [ ${#CFG_ARGS[@]} -gt 0 ]; then
   "$BINDIR/claude-mesh" configure "${CFG_ARGS[@]}" >/dev/null
   info "configured"
 elif [ -f "$HOME/.claude-mesh/config.json" ]; then
-  "$BINDIR/claude-mesh" upgrade >/dev/null
+  # Apply what we just checked out, rather than calling `update`, which would
+  # pull again - and which is loaded from whatever code existed a moment ago,
+  # so it can call into functions the old copy does not have.
+  "$NODE" -e '
+    const inst = require(process.argv[1]);
+    inst.installSkill();
+    inst.install();
+    if (typeof inst.installCodexHooks === "function") inst.installCodexHooks();
+  ' "$APP/src/install.js" >/dev/null 2>&1 || true
   info "kept existing config; hooks and skill refreshed"
 else
   printf '\n  Not configured yet. Finish with:\n    claude-mesh configure --ip https://<registry-host> --token <token>\n\n'

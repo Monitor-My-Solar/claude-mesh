@@ -159,7 +159,8 @@ async function main() {
     const instMod = require('../src/install.js');
     const sk = instMod.installSkill();
     for (const d of sk.installed) console.log(`skill  -> ${d}`);
-    const ch = instMod.installCodexHooks();
+    const ch = typeof instMod.installCodexHooks === 'function'
+      ? instMod.installCodexHooks() : {};
     if (ch.file) {
       console.log(`codex  -> ${ch.file} (${ch.events.join(', ')})`);
       console.log(`          ${ch.note}`);
@@ -235,7 +236,7 @@ async function main() {
     const inst = require('../src/install.js');
     inst.installSkill();
     inst.install();
-    inst.installCodexHooks();
+    if (typeof inst.installCodexHooks === 'function') inst.installCodexHooks();
     const sv = inst.applyService();
     console.log(`refreshed hooks, skill and service${sv.ok ? ' (relay restarted)' : ''}`);
     console.log(`config kept: ${conf.registry}`);
