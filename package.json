@@ -1,7 +1,7 @@
 {
   "name": "claude-mesh",
-  "version": "0.1.0",
-  "description": "LAN inter-agent messaging for Claude Code sessions - install with install.sh, not npm",
+  "version": "0.2.0",
+  "description": "LAN inter-agent messaging for Claude Code and Codex sessions - install with install.sh, not npm",
   "main": "src/peer.js",
   "scripts": {
     "test": "node test/run.js"

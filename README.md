@@ -1,21 +1,25 @@
 # claude-mesh
 
-**Let Claude Code sessions on different machines talk to each other — over your
-own network, across different accounts, with no per-message model cost.**
+**Let coding-agent sessions on different machines talk to each other — over your
+own network, across different accounts and different agents, with no per-message
+model cost.**
+
+Supports **Claude Code** and **Codex**. A session on either is addressed the same
+way, so a Claude session on one machine can ask a Codex thread on another.
 
 Claude Code has built-in cross-session messaging, but it relays through
-Anthropic and needs every session signed into the *same* account with Remote
-Control connected. claude-mesh does the same job on your LAN, and doesn't care
-whose account each session is logged into.
+Anthropic, needs every session signed into the *same* account with Remote
+Control connected, and only reaches other Claude Code sessions. claude-mesh does
+the job on your LAN instead.
 
 ```bash
 $ claude-mesh peers
 macmini
-  app-lead                      * idle   /Users/zak/mobileApp             4s ago
-  stripe-work                   * busy   /Users/zak/Developer/Billing     4s ago
+  app-lead                      *claude idle   /Users/zak/mobileApp        4s ago
+  understand-import-flow        *codex         /Users/zak/Developer/three  4s ago
 
 zakhome
-  server-ops                    * idle   /home/zak                        6s ago
+  server-ops                    *claude idle   /home/zak                   6s ago
 
 $ claude-mesh ask --to macmini/app-lead --body "is the build green?"
 Yes — CI passed on 4f2a1c, deployed to staging 3 minutes ago.
@@ -35,10 +39,18 @@ in the same turn.
 └───────────────┘            └──────────┘            └───────────────┘
 ```
 
-Claude Code gives every session a Unix inbox socket. A message written to it
-becomes a turn in that session — waking it if it is idle. claude-mesh carries
-messages between machines and writes them into that socket directly, so
-**delivery costs no model inference**.
+Each agent exposes a way to push a message into a live session, and claude-mesh
+uses it directly, so **delivery costs no model inference**:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Sessions | `~/.claude/sessions` | `~/.codex/state_5.sqlite` |
+| Liveness | pid + inbox socket | thread writer locks |
+| Delivery | write the inbox socket | `codex queue --thread` |
+
+A delivered message becomes a turn in that session, waking it if it is idle.
+Messages are held until the receiving relay acknowledges them, so a delivery
+that fails is retried rather than lost.
 
 - **SessionStart hook** registers the session and injects the current roster.
 - **Registry** is a directory plus a per-recipient mail bank; relays long-poll it.
@@ -64,8 +76,9 @@ development, or `--ref v0.1.0` to pin an exact version. Non-interactive:
 curl -fsSL .../install.sh | bash -s -- --registry https://mesh.example.com --token <token>
 ```
 
-Requires Node 18+ and git. macOS and Linux (the inbox socket is a Unix socket;
-Windows named pipes are not supported yet).
+Requires Node 18+ and git. macOS and Linux. Codex support is installed
+automatically when `~/.codex` exists; Codex trusts hooks by hash, so it may ask
+you to re-trust the mesh hooks after an update.
 
 ### The registry
 
@@ -97,17 +110,17 @@ relay, and keeps your registry URL and token.
 
 ### Name your sessions
 
-A session's address is `group/name` — the group is its machine. Names default
-to the working directory, so every session in one repo collides
-(`myapp-f3`, `myapp-68`, `myapp-e2`). Name a session for its job, from inside
-Claude Code:
+A session's address is `group/name` — the group is its machine. Names default to
+the working directory (Claude Code) or the first prompt (Codex), so sessions in
+one repo collide. Name a session for its job, from inside it:
 
 ```
-/rename app-lead
+/rename app-lead        # Claude Code
+/name app-lead          # Codex
 ```
 
-The mesh picks it up within ~15s. Deliberately named sessions are marked `*`
-and sorted first in `peers`.
+The mesh picks it up within ~15s. Deliberately named sessions are marked `*` and
+sorted first in `peers`.
 
 ### Talk to another agent
 
