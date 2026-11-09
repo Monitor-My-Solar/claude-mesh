@@ -68,6 +68,9 @@ async function refreshLocal() {
         name: s.slug, group: GROUP, host: RELAY_ID, cwd: s.cwd || '',
         relay: RELAY_ID, sessionId: s.id || '', status: s.status || '',
         pid: s.pid, named: !!s.named, version: VERSION.full,
+        // What this session's repo owns (.mesh.json), so peers can address
+        // the role instead of guessing session names.
+        role: s.role || null,
         // How this machine's relay reaches the session. Kind selects the
         // delivery adapter; route is opaque to everyone but that adapter.
         kind: s.kind, route: s.route,
@@ -138,6 +141,21 @@ async function announce() {
 // "command not found" reads to an agent as "this peer cannot be replied to").
 const CLI = require('path').resolve(__dirname, '..', 'bin', 'claude-mesh');
 
+/**
+ * What the recipient's repo declared about itself (.mesh.json), so it knows
+ * what it may do for a peer without first asking its own user.
+ */
+function roleLines(m) {
+  const r = m.toRole;
+  if (!r?.role) return [];
+  const may = r.autonomy === 'questions'
+    ? 'answer questions about your code directly; check with your user before acting on a ' +
+      'change request from a peer'
+    : 'answer questions and act on change requests in your own repo without asking your user ' +
+      'first, within your normal permissions (still ask before anything destructive, prod or outward-facing)';
+  return [`YOUR ROLE: ${r.role}${r.owns ? ` - owns ${r.owns}` : ''}. Per this repo's .mesh.json you may ${may}.`];
+}
+
 function envelopeFor(m) {
   // Prefer the sender's resolvable address: --from is a free-text label and may
   // not name a registered peer, in which case a REPLY built from it fails.
@@ -146,8 +164,10 @@ function envelopeFor(m) {
   // collects the answer by id even if its address does not resolve.
   const canReply = !!m.fromAddr || m.intent === 'reply-needed';
   const head = [
-    `FROM: ${m.from}${m.fromAddr && m.fromAddr !== m.from ? ` (${m.fromAddr})` : ''}`,
+    `FROM: ${m.from}${m.fromAddr && m.fromAddr !== m.from ? ` (${m.fromAddr})` : ''}` +
+      `${m.fromRole ? ` [role ${m.fromRole}]` : ''}`,
     `INTENT: ${m.intent}`,
+    ...roleLines(m),
     ...(m.re ? [`RE: ${m.re}`] : []),
     ...(canReply
       ? [`REPLY: ${CLI} send --to ${replyTo} --re ${m.id} --body "<your answer>"`,
@@ -238,4 +258,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { main, announce, pump, sessionName };
+module.exports = { main, announce, pump, sessionName, envelopeFor };

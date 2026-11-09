@@ -7,6 +7,7 @@
  */
 const { localSessions } = require('../discover.js');
 const { deliver } = require('../peer.js');
+const { readRole } = require('../role.js');
 
 const KIND = 'claude';
 
@@ -22,6 +23,7 @@ function sessions() {
     named: !!s.named,
     pid: s.pid ?? null,
     self: !!s.self,
+    role: readRole(s.cwd),
     // Delivery needs both, and neither leaves this machine except to the
     // registry, which hands them back only to this machine's own relay.
     route: { socket: s.socket, token: s.token || '' },

@@ -249,6 +249,45 @@ test('resolves a sender whose configured group has different case', async () => 
   assert.strictEqual(m.fromAddr, 'mixedcase/mixed', 'sender did not resolve, so REPLY would be dropped');
 });
 
+test('addresses a session by its declared role', async () => {
+  await register('app-term-1', { role: { role: 'mms-app', owns: 'mobile app' }, status: 'busy' });
+  await register('app-term-2', { role: { role: 'mms-app', owns: 'mobile app' }, status: 'idle' });
+  const r = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'mms-app', from: 'g1/alpha', body: 'which build?' }) });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.viaRole, 'mms-app');
+  assert.strictEqual(r.body.to, 'g1/app-term-2', 'prefers the idle session');
+  const g = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'g1/mms-app', from: 'g1/alpha', body: 'q' }) });
+  assert.strictEqual(g.status, 200, 'group/role works too');
+  await api('/inbox?relay=r1&wait=1');
+});
+
+test('the message carries the recipient role for the envelope', async () => {
+  await register('infra-term', { role: { role: 'infra', autonomy: 'questions' } });
+  await api('/send', { method: 'POST', body: JSON.stringify({ to: 'infra', from: 'g1/alpha', body: 'rolecheck' }) });
+  const m = (await api('/inbox?relay=r1&wait=1')).body.messages.find((x) => x.body === 'rolecheck');
+  assert.strictEqual(m.toRole.autonomy, 'questions');
+});
+
+test('an offline role says where it lives instead of unknown peer', async () => {
+  await register('lonely', { role: { role: 'mms-gone', owns: 'x' } });
+  await api('/deregister', { method: 'POST', body: JSON.stringify({ name: 'lonely' }) });
+  const r = await api('/send', { method: 'POST', body: JSON.stringify({ to: 'mms-gone', from: 'g1/alpha', body: 'q' }) });
+  assert.strictEqual(r.status, 404);
+  assert.ok(/role 'mms-gone' is known but no session/.test(r.body.error), r.body.error);
+  const roles = (await api('/roles')).body.roles;
+  const row = roles.find((x) => x.role === 'mms-gone');
+  assert.ok(row && row.online.length === 0, 'the directory keeps offline roles');
+});
+
+test('a session name wins over a role of the same name', async () => {
+  await register('shadow', { role: { role: 'alpha' } });
+  const r = await api('/send', { method: 'POST', body: JSON.stringify({ to: 'alpha', from: 'g1/x', body: 'q' }) });
+  assert.strictEqual(r.body.viaRole, undefined);
+  await api('/inbox?relay=r1&wait=1');
+});
+
 test('join codes are single-use and need no prior credential', async () => {
   const mint = await api('/join/new', { method: 'POST', body: JSON.stringify({ ttl: 60 }) });
   const code = mint.body.code;

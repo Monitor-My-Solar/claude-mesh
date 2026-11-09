@@ -76,6 +76,21 @@ This blocks and prints the answer on stdout, so you can use it in the same
 turn. Default timeout 120s; `--wait 300` for slower work. Use `ask` when you
 need the answer to continue, and `send` when you do not.
 
+## Who owns what: roles
+
+Repos may declare a role in a committed `.mesh.json` (role, owns, askFor,
+noAccessTo, autonomy). `claude-mesh roles` lists them, and `--to <role>`
+reaches the readiest session holding it. When your task needs code another
+role owns, message that agent yourself rather than stopping or asking your user
+to relay. A `YOUR ROLE:` line in an incoming message says what this repo lets
+peers ask of you: `requests` (act on change requests within your permissions)
+or `questions` (answer, but check with your user before changing anything).
+
+You can create and maintain the file yourself: `claude-mesh role init --role
+<name> --owns "..."`, then `claude-mesh role add --ask-for "..." --no-access
+"<thing> -> ask <role>"`, `role set`, `role remove`. Tell your user, and leave
+committing it to them.
+
 ## Receiving
 
 Messages arrive in this thread carrying `FROM`, `INTENT` and a `REPLY` line.

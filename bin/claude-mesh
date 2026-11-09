@@ -18,6 +18,12 @@ function arg(a, n, d) {
   return v === undefined || /^--[a-z]/.test(v) ? d : v;
 }
 function has(a, n) { return a.includes(n); }
+/** Every value of a repeatable flag: --ask-for a --ask-for b. */
+function all(a, n) {
+  const out = [];
+  a.forEach((v, i) => { if (v === n && a[i + 1] !== undefined && !/^--[a-z]/.test(a[i + 1])) out.push(a[i + 1]); });
+  return out;
+}
 
 /**
  * Seconds to block for a reply. --timeout is accepted as an alias: agents
@@ -132,6 +138,10 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
                                                  hooks/skill/service, keep config
                                                  ('upgrade' is the same command)
   claude-mesh peers [--group G]                  who is online (all groups by default)
+  claude-mesh role [show|init|set|add|remove]     declare/edit THIS repo's .mesh.json
+                                                 (see: claude-mesh help roles)
+  claude-mesh roles                              who owns what (each repo's .mesh.json);
+                                                 --to accepts a role: --to mms-app
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
        --now                     ask the receiver to surface it immediately
@@ -149,6 +159,34 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
 
 Config precedence: env (MESH_*) > ~/.claude-mesh/config.json > defaults.`;
 
+const ROLES_HELP = `Roles: say which agent owns which code.
+
+Commit a .mesh.json at a repo root. Every session opened in that repo, on any
+machine, advertises it, and other agents can address the role:
+
+  {
+    "role": "mms-web",
+    "owns": "MMS backend services, web dashboard, DB, MQTT",
+    "askFor": ["API/MQTT contracts", "DB lookups", "dev deploys"],
+    "noAccessTo": ["mobile app code -> ask mms-app"],
+    "autonomy": "requests"
+  }
+
+autonomy - what peers may expect of THIS repo's agent without its user:
+  "requests"   answer questions and act on change requests (default)
+  "questions"  answer questions; change requests go to its user first
+
+  claude-mesh roles                        the directory, online or not
+  claude-mesh ask --to mms-web --body ...  reaches the readiest mms-web session
+
+Creating and editing it (agents can run these themselves):
+  claude-mesh role                                      show this repo's file
+  claude-mesh role init --role mms-web --owns "..." [--ask-for "..."]... [--no-access "..."]... [--autonomy requests|questions]
+  claude-mesh role set  --owns "..." | --role X | --autonomy questions
+  claude-mesh role add  --ask-for "..." --no-access "mobile app code -> ask mms-app"
+  claude-mesh role remove --ask-for "..."
+The file goes at the repo root; commit it so every machine picks it up.`;
+
 async function main() {
   let [cmd, ...rest] = process.argv.slice(2);
   // 'upgrade' shipped first and only refreshed hooks, reporting success while
@@ -160,6 +198,7 @@ async function main() {
   // address resolves and recipients get a usable REPLY line.
   conf.group = String(conf.group || '').toLowerCase();
 
+  if (cmd === 'help' && rest[0] === 'roles') return console.log(ROLES_HELP);
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help' || has(rest, '--help'))
     return console.log(HELP);
 
@@ -449,6 +488,68 @@ async function main() {
     return;
   }
 
+  if (cmd === 'role') {
+    // Declare or edit THIS repo's role - meant to be run by the agent itself.
+    const R = require('../src/role.js');
+    const [sub = 'show', ...a] = rest;
+    const cwd = arg(a, '--cwd', process.cwd());
+    try {
+      if (sub === 'show') {
+        const f = R.findFile(cwd);
+        if (!f) {
+          console.log(`no ${R.FILE} for ${cwd}`);
+          console.log('create one:  claude-mesh role init --role <name> --owns "<what this repo owns>" ' +
+                      '[--ask-for "..."] [--no-access "..."] [--autonomy requests|questions]');
+          return;
+        }
+        console.log(f);
+        console.log(fs.readFileSync(f, 'utf8').trimEnd());
+        return;
+      }
+      const set = {};
+      if (arg(a, '--role')) set.role = arg(a, '--role');
+      if (arg(a, '--owns')) set.owns = arg(a, '--owns');
+      if (arg(a, '--autonomy')) set.autonomy = arg(a, '--autonomy');
+      const lists = { askFor: all(a, '--ask-for'), noAccessTo: all(a, '--no-access') };
+      let r;
+      if (sub === 'init') r = R.writeRole(cwd, { create: true, set: { autonomy: 'requests', ...set }, add: lists });
+      else if (sub === 'set' || sub === 'add') r = R.writeRole(cwd, { set, add: lists });
+      else if (sub === 'remove' || sub === 'rm') r = R.writeRole(cwd, { remove: lists });
+      else { console.error(`unknown: role ${sub} (show | init | set | add | remove)`); process.exit(1); }
+      console.log(`${r.created ? 'created' : 'updated'} ${r.file}`);
+      console.log(fs.readFileSync(r.file, 'utf8').trimEnd());
+      console.log('\nLive sessions in this repo advertise it within ~15s. Commit the file so it ' +
+                  'applies on every machine that checks the repo out.');
+    } catch (e) {
+      console.error(`claude-mesh: ${e.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (cmd === 'roles' || cmd === 'who') {
+    // Who owns what, from each repo's .mesh.json - online or not.
+    const { roles } = await api('/roles', conf);
+    if (!roles.length) {
+      console.log('(no roles declared yet)');
+      console.log('Declare one by committing a .mesh.json to a repo - see `claude-mesh help roles`.');
+      return;
+    }
+    for (const r of roles) {
+      const on = r.online.length
+        ? r.online.map((o) => `${o.group}/${o.name}${o.status ? ` [${o.status}]` : ''}`).join(', ')
+        : `OFFLINE (last seen ${Math.round((Date.now() - r.lastSeen) / 60_000)} min ago on ${r.group})`;
+      console.log(`\n${r.role}  (${r.autonomy === 'questions' ? 'questions only' : 'accepts change requests'})`);
+      if (r.owns) console.log(`  owns:       ${r.owns}`);
+      if (r.askFor?.length) console.log(`  ask it for: ${r.askFor.join('; ')}`);
+      if (r.noAccessTo?.length) console.log(`  no access:  ${r.noAccessTo.join('; ')}`);
+      console.log(`  where:      ${r.group}:${r.cwd || '?'}`);
+      console.log(`  online:     ${on}`);
+    }
+    console.log('\nAddress a role directly:  claude-mesh ask --to <role> --body "..."');
+    return;
+  }
+
   if (cmd === 'peers') {
     const g = arg(rest, '--group');          // no filter unless asked
     const { peers } = await api(`/peers${g ? `?group=${encodeURIComponent(g)}` : ''}`, conf);
@@ -468,7 +569,8 @@ async function main() {
         const st = p.status ? p.status.padEnd(5) : '     ';
         const tag = p.named ? ' *' : '  ';
         const kind = (p.kind || 'claude').padEnd(6);
-        console.log(`  ${p.name.padEnd(30)}${tag}${kind} ${st}  ${(p.cwd || '-').padEnd(30)} ${age}s ago`);
+        const role = p.role?.role ? `  role=${p.role.role}` : '';
+        console.log(`  ${p.name.padEnd(30)}${tag}${kind} ${st}  ${(p.cwd || '-').padEnd(30)} ${age}s ago${role}`);
       }
     }
     const named = peers.find((p) => p.named) || peers[0];
@@ -504,7 +606,8 @@ async function main() {
       reportUnreachable(e);
       process.exit(1);
     }
-    if (!has(rest, '--wait') && !has(rest, '--timeout')) return console.log(`queued ${j.id} -> ${to}`);
+    const dest = j.viaRole ? `${j.to} (role ${j.viaRole})` : to;
+    if (!has(rest, '--wait') && !has(rest, '--timeout')) return console.log(`queued ${j.id} -> ${dest}`);
 
     // Block until the recipient replies with --re <this id>.
     const secs = waitSecs(rest);
@@ -539,7 +642,7 @@ async function main() {
       reportUnreachable(e);
       process.exit(1);
     }
-    process.stderr.write(`asked ${to} (${j.id}); waiting up to ${secs}s...\n`);
+    process.stderr.write(`asked ${j.viaRole ? `${j.to} (role ${j.viaRole})` : to} (${j.id}); waiting up to ${secs}s...\n`);
     const got = await awaitReply(conf, j.id, secs);
     if (!got) {
       console.log(NO_REPLY_YET(to));

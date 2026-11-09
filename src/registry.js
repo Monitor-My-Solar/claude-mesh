@@ -13,6 +13,16 @@ const { randomUUID, timingSafeEqual } = require('crypto');
 const users = require('./users.js');
 const sess = require('./session.js');
 const ui = require('./ui.js');
+const { normalize: normalizeRole } = require('./role.js');
+
+/** Best live session for a role: named, then readiest, then most recent. */
+const STATUS_RANK = { idle: 0, busy: 1, '': 2, shell: 2, waiting: 3 };
+function pickForRole(cands) {
+  return [...cands].sort((a, b) =>
+    (b.named - a.named)
+    || ((STATUS_RANK[a.status] ?? 2) - (STATUS_RANK[b.status] ?? 2))
+    || (b.seen - a.seen))[0];
+}
 
 const STATE_FILE = process.env.MESH_STATE || '/var/lib/claude-mesh/state.json';
 
@@ -22,7 +32,7 @@ const STATE_FILE = process.env.MESH_STATE || '/var/lib/claude-mesh/state.json';
  * an error rather than a guess: delivering into the wrong session is worse than
  * refusing to deliver.
  */
-function resolveTarget(peers, to, toGroup) {
+function resolveTarget(peers, to, toGroup, roles) {
   if (peers.has(to)) return { name: to };
 
   const all = [...peers.values()];
@@ -45,6 +55,24 @@ function resolveTarget(peers, to, toGroup) {
   const hits = pool.filter((p) => p.name === to || p.name.endsWith(`/${to}`));
   if (hits.length === 1) return { name: hits[0].name };
   if (hits.length > 1) return { error: `ambiguous '${to}' - qualify it as group/name`, candidates: hits.map((p) => p.name) };
+
+  // Not a session name: try a role (.mesh.json), optionally group-qualified.
+  // Several sessions may hold one role (two terminals in the same repo); any
+  // of them owns that code, so pick the readiest rather than refusing.
+  const [rg, rr] = to.includes('/') ? [to.split('/')[0], to.split('/').slice(1).join('/')] : [toGroup || '', to];
+  const want = String(rr).toLowerCase();
+  const byRole = all.filter((p) => p.role?.role === want && (!rg || sameGroup(p.group, rg)));
+  if (byRole.length) return { name: pickForRole(byRole).name, viaRole: want };
+  const known = roles && roles.get(want);
+  if (known) {
+    const ago = Math.round((Date.now() - known.lastSeen) / 60_000);
+    return {
+      error: `role '${want}' is known but no session holding it is online - last seen ` +
+             `${ago} min ago on ${known.group} in ${known.cwd || '?'}. Ask your user to open ` +
+             'an agent session there; no other address will reach it',
+      online: all.map((p) => `${p.group}/${p.name}${p.role?.role ? ` (role ${p.role.role})` : ''}`),
+    };
+  }
 
   return {
     error: `unknown peer '${to}' - it is not registered, so no spelling of the ` +
@@ -83,6 +111,14 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
   const awaiting = new Map();// request id -> number of open /await calls
+  // role -> last declaration seen + where. Survives sessions ending, so an
+  // agent can be told "mms-app lives on macmini, nobody is there right now"
+  // instead of "unknown peer".
+  const roles = new Map();
+  const noteRole = (p) => {
+    if (!p.role?.role) return;
+    roles.set(p.role.role, { ...p.role, group: p.group, cwd: p.cwd, kind: p.kind, lastSeen: p.seen });
+  };
   const rate = new Map();    // "from" and "from>to" -> [timestamps]
   const inflight = new Map();// msg id -> {msg, relay, sentAt, attempts}
   const joins = new Map();   // join code -> {expires, uses}
@@ -124,6 +160,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             v: 1,
             savedAt: Date.now(),
             peers: [...peers.values()],
+            roles: [...roles.entries()],
             bank: [...bank.entries()],
             inflight: [...inflight.entries()],
           }), { mode: 0o600 });
@@ -146,6 +183,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
       // re-register anything still alive within a cycle anyway.
       if (p.seen > cutoff) { peers.set(p.name, p); kept++; }
     }
+    for (const [k, v] of d.roles || []) if (v && v.role) roles.set(k, v);
     for (const [k, v] of d.bank || []) if (Array.isArray(v) && v.length) bank.set(k, v);
     // Anything in flight when we stopped was never acked: put it back.
     for (const [, rec] of d.inflight || []) {
@@ -158,6 +196,8 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
+    // Forget roles nobody has held for a month (a repo renamed or retired).
+    for (const [r, v] of roles) if (v.lastSeen < Date.now() - 30 * 86_400_000) roles.delete(r);
     // A parked reply nobody collected (its waiter vanished between hops).
     for (const [id, m] of replies) if (m.ts < Date.now() - 10 * 60_000) replies.delete(id);
     for (const [n, p] of peers) if (p.seen < cutoff) peers.delete(n);
@@ -292,6 +332,19 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         });
       }
 
+      // Who owns what: every role ever declared, with the sessions holding it now.
+      if (url.pathname === '/roles') {
+        prune();
+        const live = [...peers.values()];
+        return reply(200, {
+          roles: [...roles.values()].sort((a, b) => a.role.localeCompare(b.role)).map((r) => ({
+            ...r,
+            online: live.filter((p) => p.role?.role === r.role)
+              .map((p) => ({ name: p.name, group: p.group, status: p.status, kind: p.kind })),
+          })),
+        });
+      }
+
       // Block until a reply to `id` arrives, so a sender can ask a question and
       // wait for the answer rather than polling.
       if (url.pathname === '/await') {
@@ -419,8 +472,10 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             kind:   d.kind || 'claude',
             route:  d.route || (d.socket ? { socket: d.socket, token: d.token || '' } : null),
             pid:    d.pid || null,
+            role:   normalizeRole(d.role),
             seen:   Date.now(),
           });
+          noteRole(peers.get(name));
           wake();
           persist();
           return reply(200, { ok: true, name });
@@ -479,7 +534,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           if (!to || !body) return reply(400, { error: 'to and body required' });
           prune();
 
-          const resolved = resolveTarget(peers, to, d.toGroup);
+          const resolved = resolveTarget(peers, to, d.toGroup, roles);
           // An answer to a blocked `ask` needs no routable recipient: the
           // asker collects it by id. This keeps a reply working even when the
           // asker's own address did not resolve.
@@ -508,6 +563,10 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             group: d.group || 'default',
             intent: d.intent || 'inform', re: d.re || '',
             priority: d.priority === 'immediate' ? 'immediate' : 'next',
+            // The recipient's declared role travels with the message, so the
+            // envelope can remind it what it owns and what it may do unasked.
+            toRole: peers.get(target)?.role || null,
+            fromRole: senderHit.error ? null : (peers.get(senderHit.name)?.role?.role || null),
             body, ts: Date.now(),
           };
           // A reply to an `ask` that is still blocked waiting goes to that
@@ -522,7 +581,9 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           if (!toWaiter) { qq.push(msg); bank.set(target, qq); }
           wake();
           persist();
-          return reply(200, { ok: true, id: msg.id, delivered: toWaiter ? 'waiter' : 'inbox' });
+          return reply(200, { ok: true, id: msg.id, to: `${peers.get(target)?.group}/${target}`,
+                              viaRole: resolved.viaRole || undefined,
+                              delivered: toWaiter ? 'waiter' : 'inbox' });
         }
         return reply(404, { error: 'not found' });
       });

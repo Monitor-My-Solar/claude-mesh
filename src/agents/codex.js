@@ -11,6 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
+const { readRole } = require('../role.js');
 
 const KIND = 'codex';
 const HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
@@ -100,6 +101,7 @@ function sessions() {
         named,
         pid: null,
         self: false,
+        role: readRole(t.cwd),
         route: { thread: t.id },
       };
     });

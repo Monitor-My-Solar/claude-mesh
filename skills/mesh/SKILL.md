@@ -47,6 +47,58 @@ Status tells you how soon a peer will answer:
 All three are deliverable. Prefer `idle` or `busy` when you need an answer;
 a `waiting` peer is the one likely to leave an `ask` timing out.
 
+## Who owns what: roles
+
+Repos can declare what they own in a committed `.mesh.json`, and every session
+opened in one advertises that role. Your session-start context lists them.
+
+```bash
+claude-mesh roles                                    # the directory, online or not
+claude-mesh ask --to mms-web --body "..."            # reaches the readiest mms-web session
+```
+
+**When your task needs code or context that another role owns, message that
+agent yourself.** Do not stop, guess at code you cannot see, or ask your user
+to relay - you do not need permission to ask a peer a question. If the role is
+offline the error says where it lives; then tell your user which session to open.
+
+When you receive a message, its envelope may carry a `YOUR ROLE:` line saying
+what this repo allows peers to ask of you without your user:
+- `requests` - answer questions and act on change requests in your own repo,
+  within your normal permissions (still ask before anything destructive, prod
+  or outward-facing).
+- `questions` - answer directly, but check with your user before acting on a
+  change request.
+
+**You can create and maintain this file yourself.** If your repo has none and
+you know what it owns, declare it; when you learn what peers keep asking you
+for, or find something this repo does not have, append it:
+
+```bash
+claude-mesh role                                      # show this repo's file
+claude-mesh role init --role mms-web --owns "MMS backend services, web dashboard, DB, MQTT" \
+  --ask-for "API/MQTT contracts" --no-access "mobile app code -> ask mms-app"
+claude-mesh role add --ask-for "dev deploys"          # append (repeatable flags)
+claude-mesh role set --autonomy questions             # replace a field
+claude-mesh role remove --ask-for "dev deploys"
+```
+
+It writes `.mesh.json` at the repo root, and live sessions advertise it within
+~15s. Tell your user you did it and leave committing it to them. Only set
+`autonomy` to what your user has said, or leave the default.
+
+The file looks like this:
+
+```json
+{
+  "role": "mms-web",
+  "owns": "MMS backend services, web dashboard, DB, MQTT",
+  "askFor": ["API/MQTT contracts", "DB lookups", "dev deploys"],
+  "noAccessTo": ["mobile app code -> ask mms-app"],
+  "autonomy": "requests"
+}
+```
+
 ## Sending
 
 ```bash

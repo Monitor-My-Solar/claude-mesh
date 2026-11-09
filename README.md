@@ -122,6 +122,44 @@ one repo collide. Name a session for its job, from inside it:
 The mesh picks it up within ~15s. Deliberately named sessions are marked `*` and
 sorted first in `peers`.
 
+### Say who owns what
+
+Session names come and go; what a repo owns does not. Commit a `.mesh.json` at
+a repo root and every session opened in it, on any machine, advertises that
+role:
+
+```json
+{
+  "role": "mms-app",
+  "owns": "MMS mobile app (React Native), push notifications",
+  "askFor": ["app screens and flows", "what the app sends to the API"],
+  "noAccessTo": ["backend and DB -> ask mms-web"],
+  "autonomy": "requests"
+}
+```
+
+Agents then address the role, wherever it is running, and get a "who owns
+what" directory at session start telling them to go and ask rather than stop
+or ask you to relay:
+
+```bash
+claude-mesh roles                                  # online and offline roles
+claude-mesh ask --to mms-app --body "which API version does the app call?"
+```
+
+Agents can write and maintain the file themselves (it goes at the repo root):
+
+```bash
+claude-mesh role init --role mms-app --owns "MMS mobile app" --no-access "backend and DB -> ask mms-web"
+claude-mesh role add --ask-for "what the app sends to the API"
+claude-mesh role set --autonomy questions
+```
+
+`autonomy` sets what peers may expect of that repo's agent without its user:
+`requests` (default: answers questions and acts on change requests, within its
+own permissions) or `questions` (answers, but asks its user before changing
+anything). If no session holds a role, the error says where it last ran.
+
 ### Talk to another agent
 
 ```bash

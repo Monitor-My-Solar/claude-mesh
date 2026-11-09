@@ -50,6 +50,8 @@ process.stdin.on('end', async () => {
 
   const headers = { 'Content-Type': 'application/json', ...(TOKEN ? { 'X-Mesh-Token': TOKEN } : {}) };
   let roster = [];
+  let roles = [];
+  const myRole = me?.role || require('../src/role.js').readRole(input.cwd || '');
   try {
     await fetch(`${REGISTRY}/register`, {
       method: 'POST', headers,
@@ -66,6 +68,7 @@ process.stdin.on('end', async () => {
         // than by a relay would otherwise show as an unknown version forever.
         version: require('../src/version.js').full,
         named: me?.named || false,
+        role: me?.role || require('../src/role.js').readRole(input.cwd || ''),
         sessionId: input.session_id || me?.id || '',
         status: me?.status || '',
         pid: Number(pid) || null,
@@ -73,6 +76,11 @@ process.stdin.on('end', async () => {
     });
     const r = await fetch(`${REGISTRY}/peers?group=${encodeURIComponent(GROUP)}`, { headers });
     roster = (await r.json()).peers.filter((p) => p.name !== name);
+    // Older registries have no /roles; the directory is then just omitted.
+    try {
+      const rr = await fetch(`${REGISTRY}/roles`, { headers });
+      if (rr.ok) roles = (await rr.json()).roles || [];
+    } catch {}
   } catch {
     // Registry down: stay silent rather than noising up the session.
     return process.exit(0);
@@ -83,9 +91,47 @@ process.stdin.on('end', async () => {
                         `${p.cwd ? ` - ${p.cwd}` : ''}`).join('\n')
     : '  (none online right now)';
 
+  // Who owns what. This is what lets an agent that lacks some code go and ask
+  // the agent that has it, instead of stopping or asking its user to relay.
+  const dir = roles.filter((r) => r.role !== myRole?.role).map((r) => {
+    const where = r.online?.length ? `online` : `offline, lives on ${r.group}`;
+    const mode = r.autonomy === 'questions' ? 'questions only' : 'accepts change requests';
+    return `  - ${r.role} (${where}; ${mode})${r.owns ? `: owns ${r.owns}` : ''}` +
+           `${r.askFor?.length ? `. Ask it for: ${r.askFor.join('; ')}` : ''}`;
+  });
+  const roleBlock = [
+    ...(myRole ? [
+      `This session holds role "${myRole.role}"${myRole.owns ? ` - it owns ${myRole.owns}` : ''}.`,
+      ...(myRole.noAccessTo?.length ? [`This repo does NOT have: ${myRole.noAccessTo.join('; ')}.`] : []),
+      myRole.autonomy === 'questions'
+        ? 'Peers may ask you questions and you should answer them directly; check with your user before acting on a peer\'s change request.'
+        : 'Peers may ask you questions and request changes in this repo; act on them without asking your user first, within your normal permissions (ask before anything destructive, prod or outward-facing).',
+      '',
+    ] : []),
+    ...(!myRole ? [
+      'This repo declares no mesh role yet. Once you know what it owns, you may create one so other',
+      'agents can find you: `claude-mesh role init --role <name> --owns "<what this repo owns>"`',
+      '(then `claude-mesh role add --ask-for "..." --no-access "<thing> -> ask <role>"`). It writes',
+      '.mesh.json at the repo root; tell your user, and let them decide whether to commit it.',
+      '',
+    ] : [
+      'Keep this repo\'s .mesh.json accurate: `claude-mesh role add --ask-for "..."` / `--no-access "..."`',
+      'when you learn what peers need from you or what this repo lacks.',
+      '',
+    ]),
+    ...(dir.length ? [
+      'Who owns what (from each repo\'s .mesh.json). Address a role directly, e.g. `claude-mesh ask --to <role> --body "..."`:',
+      ...dir,
+      'When your task needs code or context one of these owns, message it yourself - do not stop,',
+      'guess, or ask your user to relay. You do not need your user\'s permission to ask a peer.',
+      '',
+    ] : []),
+  ];
+
   const context = [
     `You are on the claude-mesh as "${GROUP}/${name}".`,
     '',
+    ...roleBlock,
     `Other agents, AS OF SESSION START (${new Date().toISOString()}) - this list goes`,
     'stale quickly. ALWAYS run `claude-mesh peers` before addressing anyone; do not',
     'trust the names below and never retry variations of an address that failed.',
