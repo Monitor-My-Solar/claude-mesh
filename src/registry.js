@@ -26,7 +26,12 @@ function resolveTarget(peers, to, toGroup) {
   if (peers.has(to)) return { name: to };
 
   const all = [...peers.values()];
-  const byGroupName = (g, n) => all.filter((p) => p.group === g && (p.name === n || p.name.endsWith(`/${n}`)));
+  // Groups are stored lowercased at /register, but senders build their own
+  // address from raw config ('mmsDEV/agent'). Compare case-insensitively, or
+  // every sender on such a machine resolves to nobody and its recipients are
+  // told it cannot receive replies.
+  const sameGroup = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+  const byGroupName = (g, n) => all.filter((p) => sameGroup(p.group, g) && (p.name === n || p.name.endsWith(`/${n}`)));
 
   if (to.includes('/')) {
     const [g, ...restParts] = to.split('/');
@@ -36,7 +41,7 @@ function resolveTarget(peers, to, toGroup) {
     if (hits.length > 1) return { error: `ambiguous '${to}'`, candidates: hits.map((p) => p.name) };
   }
 
-  const pool = toGroup ? all.filter((p) => p.group === toGroup) : all;
+  const pool = toGroup ? all.filter((p) => sameGroup(p.group, toGroup)) : all;
   const hits = pool.filter((p) => p.name === to || p.name.endsWith(`/${to}`));
   if (hits.length === 1) return { name: hits[0].name };
   if (hits.length > 1) return { error: `ambiguous '${to}' - qualify it as group/name`, candidates: hits.map((p) => p.name) };
@@ -77,6 +82,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   const bank  = new Map();   // name -> [msg]
   const waits = new Set();   // pending long-polls
   const replies = new Map(); // request id -> reply message (awaiting collection)
+  const awaiting = new Map();// request id -> number of open /await calls
   const rate = new Map();    // "from" and "from>to" -> [timestamps]
   const inflight = new Map();// msg id -> {msg, relay, sentAt, attempts}
   const joins = new Map();   // join code -> {expires, uses}
@@ -152,6 +158,8 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
+    // A parked reply nobody collected (its waiter vanished between hops).
+    for (const [id, m] of replies) if (m.ts < Date.now() - 10 * 60_000) replies.delete(id);
     for (const [n, p] of peers) if (p.seen < cutoff) peers.delete(n);
 
     // Drop bare-pid registrations once the same machine has registered a named
@@ -306,7 +314,15 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           reply(200, { reply: got });
         };
         const timer = setTimeout(() => { cleanup(); reply(200, { reply: null, timeout: true }); }, waitMs);
-        const cleanup = () => { clearTimeout(timer); waits.delete(onTick); };
+        let open = true;
+        const cleanup = () => {
+          clearTimeout(timer); waits.delete(onTick);
+          if (!open) return;
+          open = false;
+          const n = (awaiting.get(id) || 1) - 1;
+          if (n > 0) awaiting.set(id, n); else awaiting.delete(id);
+        };
+        awaiting.set(id, (awaiting.get(id) || 0) + 1);
         waits.add(onTick);
         req.on('close', cleanup);
         return;
@@ -464,6 +480,17 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           prune();
 
           const resolved = resolveTarget(peers, to, d.toGroup);
+          // An answer to a blocked `ask` needs no routable recipient: the
+          // asker collects it by id. This keeps a reply working even when the
+          // asker's own address did not resolve.
+          const reId = String(d.re || '');
+          if (resolved.error && reId && awaiting.get(reId)) {
+            const m = { id: randomUUID().slice(0, 12), to, from: d.from || 'unknown', fromAddr: '',
+                        group: d.group || 'default', intent: d.intent || 'inform', re: reId,
+                        priority: 'next', body, ts: Date.now() };
+            replies.set(reId, m); wake();
+            return reply(200, { ok: true, id: m.id, delivered: 'waiter' });
+          }
           if (resolved.error) return reply(404, resolved);
           const target = resolved.name;
 
@@ -483,16 +510,19 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             priority: d.priority === 'immediate' ? 'immediate' : 'next',
             body, ts: Date.now(),
           };
-          qq.push(msg); bank.set(target, qq); wake();
-
-          // A message answering a request is also parked by request id, so the
-          // original sender can collect it without being a registered relay.
-          if (msg.re) {
-            replies.set(msg.re, msg);
-            wake();
-          }
+          // A reply to an `ask` that is still blocked waiting goes to that
+          // waiter only. Banking it as well delivered every answer twice: once
+          // as the ask's output, and again later as a turn in the asker's
+          // session. With nobody waiting (the ask timed out, or the original
+          // was a plain send), it is banked and arrives as a normal message.
+          // Always parked by id too, so a waiter between two polling hops
+          // still collects it (expired by prune() if nobody does).
+          const toWaiter = !!(msg.re && awaiting.get(msg.re));
+          if (msg.re) replies.set(msg.re, msg);
+          if (!toWaiter) { qq.push(msg); bank.set(target, qq); }
+          wake();
           persist();
-          return reply(200, { ok: true, id: msg.id });
+          return reply(200, { ok: true, id: msg.id, delivered: toWaiter ? 'waiter' : 'inbox' });
         }
         return reply(404, { error: 'not found' });
       });

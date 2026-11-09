@@ -132,20 +132,36 @@ async function announce() {
   }
 }
 
+// The REPLY command is printed with this checkout's absolute path: the relay
+// runs on the receiver's machine, so the path is valid there even when the
+// launcher is missing from the agent's PATH (a bare `claude-mesh` that is
+// "command not found" reads to an agent as "this peer cannot be replied to").
+const CLI = require('path').resolve(__dirname, '..', 'bin', 'claude-mesh');
+
 function envelopeFor(m) {
   // Prefer the sender's resolvable address: --from is a free-text label and may
   // not name a registered peer, in which case a REPLY built from it fails.
   const replyTo = m.fromAddr || m.from;
+  // A reply-needed message usually comes from `claude-mesh ask`, whose sender
+  // collects the answer by id even if its address does not resolve.
+  const canReply = !!m.fromAddr || m.intent === 'reply-needed';
   const head = [
     `FROM: ${m.from}${m.fromAddr && m.fromAddr !== m.from ? ` (${m.fromAddr})` : ''}`,
     `INTENT: ${m.intent}`,
     ...(m.re ? [`RE: ${m.re}`] : []),
-    // Only print a REPLY command that will actually work. A send from a plain
-    // shell has no session to reply to, and printing a broken command sends
-    // the recipient chasing an address that cannot resolve.
-    ...(m.fromAddr
-      ? [`REPLY: claude-mesh send --to ${replyTo} --re ${m.id}`]
-      : ['REPLY: (this sender has no session to reply to - answer your own user instead)']),
+    ...(canReply
+      ? [`REPLY: ${CLI} send --to ${replyTo} --re ${m.id} --body "<your answer>"`,
+         // Claude Code tells the receiver to answer with SendMessage. For a
+         // mesh message that is wrong: there is no from= address, so agents
+         // concluded the sender "cannot receive replies"; and between sessions
+         // on one machine SendMessage does work, but bypasses the mesh, so a
+         // sender blocked in `ask` never sees the answer and times out.
+         'HOW TO REPLY: run the REPLY command above with Bash. Do NOT use SendMessage for this ' +
+         'message - it bypasses the mesh and the sender will not get it. This sender CAN receive replies.',
+         ...(m.intent === 'reply-needed'
+           ? ['The sender is probably blocked waiting for this answer: reply before doing other work.']
+           : [])]
+      : ['REPLY: (sent from a plain shell, not an agent session - there is nobody to reply to)']),
   ].join('\n');
   return `${head}\n\n${m.body}`;
 }

@@ -9,8 +9,32 @@ const cfg = require('../src/config.js');
 const { localSessions } = require('../src/discover.js');
 const { deliver } = require('../src/peer.js');
 
-function arg(a, n, d) { const i = a.indexOf(n); return i === -1 ? d : a[i + 1]; }
+// A flag whose next token is another flag has no value (e.g. an empty --re ""
+// expanded away) - never take the next flag as the value.
+function arg(a, n, d) {
+  const i = a.indexOf(n);
+  if (i === -1) return d;
+  const v = a[i + 1];
+  return v === undefined || /^--[a-z]/.test(v) ? d : v;
+}
 function has(a, n) { return a.includes(n); }
+
+/**
+ * Seconds to block for a reply. --timeout is accepted as an alias: agents
+ * reach for it, and it used to be silently ignored (leaving the 120s default).
+ * The default stays under Claude Code's 120s Bash timeout, which otherwise
+ * backgrounds the wait and the agent moves on without the answer.
+ */
+function waitSecs(rest) {
+  const v = arg(rest, '--wait', arg(rest, '--timeout', ''));
+  const n = Number(v);
+  return v && Number.isFinite(n) && n > 0 ? n : 110;
+}
+
+const NO_REPLY_YET = (to) =>
+  `no reply yet from ${to}. This is not a failure: the message was delivered, and when ` +
+  `${to} answers, the reply will arrive in this session as a cross-session message. ` +
+  'Carry on with other work and do not re-send the question.';
 
 async function api(path, conf, opts = {}) {
   const res = await fetch(conf.registry + path, {
@@ -111,7 +135,7 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
   claude-mesh local                              live sessions on this machine
   claude-mesh send --to [GROUP/]NAME --body TEXT [--group G] [--intent ...] [--re ID] [--now]
        --now                     ask the receiver to surface it immediately
-       --wait [SECS]             block until the recipient replies (default 120)
+       --wait [SECS]             block until the recipient replies (default 110)
 
   claude-mesh ask --to [GROUP/]NAME --body QUESTION [--wait SECS]
                                  send a question and print the answer (blocks)
@@ -131,6 +155,9 @@ async function main() {
   // without whatever command would have fixed it. Same command now.
   if (cmd === 'upgrade') cmd = 'update';
   const conf = cfg.load();
+  // The registry stores groups lowercased; send ours the same way so our own
+  // address resolves and recipients get a usable REPLY line.
+  conf.group = String(conf.group || '').toLowerCase();
 
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help' || has(rest, '--help'))
     return console.log(HELP);
@@ -460,14 +487,14 @@ async function main() {
       reportUnreachable(e);
       process.exit(1);
     }
-    if (!has(rest, '--wait')) return console.log(`queued ${j.id} -> ${to}`);
+    if (!has(rest, '--wait') && !has(rest, '--timeout')) return console.log(`queued ${j.id} -> ${to}`);
 
     // Block until the recipient replies with --re <this id>.
-    const secs = Number(arg(rest, '--wait', '120'));
+    const secs = waitSecs(rest);
     process.stderr.write(`queued ${j.id} -> ${to}; waiting up to ${secs}s for a reply...\n`);
     const got = await awaitReply(conf, j.id, secs);
     if (!got) {
-      console.error(`no reply within ${secs}s (the message was delivered; the agent may be busy)`);
+      console.log(NO_REPLY_YET(to));
       process.exit(2);
     }
     console.log(got.body);
@@ -478,7 +505,7 @@ async function main() {
     // Send a question and block for the answer: the RPC form of send.
     const to = arg(rest, '--to'), body = arg(rest, '--body');
     if (!to || !body) { console.error('usage: claude-mesh ask --to NAME --body TEXT [--wait SECS]'); process.exit(1); }
-    const secs = Number(arg(rest, '--wait', '120'));
+    const secs = waitSecs(rest);
     const selfName = selfAddress(conf);
 
     let j;
@@ -486,7 +513,7 @@ async function main() {
       j = await api('/send', conf, {
         method: 'POST',
         body: JSON.stringify({
-          to, body, from: selfName || 'unknown', intent: 'reply-needed',
+          to, body, from: selfName || `${conf.group}/cli`, intent: 'reply-needed',
           group: conf.group, toGroup: arg(rest, '--group', ''),
           priority: 'immediate',
         }),
@@ -498,7 +525,7 @@ async function main() {
     process.stderr.write(`asked ${to} (${j.id}); waiting up to ${secs}s...\n`);
     const got = await awaitReply(conf, j.id, secs);
     if (!got) {
-      console.error(`no reply within ${secs}s`);
+      console.log(NO_REPLY_YET(to));
       process.exit(2);
     }
     console.log(got.body);

@@ -203,6 +203,52 @@ test('correlates a reply to its request via /await', async () => {
   assert.strictEqual(got.body.reply.body, 'the answer');
 });
 
+test('a reply to a blocked ask goes to the waiter, not also to the inbox', async () => {
+  const sent = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'g1/beta', body: 'q?' }) });
+  await register('beta');
+  await api('/inbox?relay=r1&wait=1');            // drain the question
+  const waiter = api(`/await?id=${sent.body.id}&wait=5`);
+  await new Promise((r) => setTimeout(r, 200));   // let the await open
+  const rep = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'g1/beta', from: 'g1/alpha', re: sent.body.id, body: 'a' }) });
+  assert.strictEqual(rep.body.delivered, 'waiter');
+  assert.strictEqual((await waiter).body.reply.body, 'a');
+  const inbox = await api('/inbox?relay=r1&wait=1');
+  assert.ok(!inbox.body.messages.some((m) => m.re === sent.body.id), 'reply was delivered twice');
+});
+
+test('a reply with nobody waiting is banked for the asker session', async () => {
+  const sent = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'g1/beta', body: 'q2?' }) });
+  await api('/inbox?relay=r1&wait=1');
+  const rep = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'g1/beta', from: 'g1/alpha', re: sent.body.id, body: 'late' }) });
+  assert.strictEqual(rep.body.delivered, 'inbox');
+  const inbox = await api('/inbox?relay=r1&wait=1');
+  assert.ok(inbox.body.messages.some((m) => m.body === 'late'));
+});
+
+test('a waiting ask gets its reply even when its own address does not resolve', async () => {
+  const sent = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'nowhere/ghost', intent: 'reply-needed', body: 'q3?' }) });
+  const waiter = api(`/await?id=${sent.body.id}&wait=5`);
+  await new Promise((r) => setTimeout(r, 200));
+  const rep = await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'nowhere/ghost', from: 'g1/alpha', re: sent.body.id, body: 'found you' }) });
+  assert.strictEqual(rep.status, 200);
+  assert.strictEqual((await waiter).body.reply.body, 'found you');
+});
+
+test('resolves a sender whose configured group has different case', async () => {
+  await register('mixed', { group: 'MixedCase' });     // stored lowercased
+  await api('/send', { method: 'POST',
+    body: JSON.stringify({ to: 'alpha', from: 'MixedCase/mixed', group: 'MixedCase', body: 'hi' }) });
+  const inbox = await api('/inbox?relay=r1&wait=1');
+  const m = inbox.body.messages.find((x) => x.body === 'hi');
+  assert.strictEqual(m.fromAddr, 'mixedcase/mixed', 'sender did not resolve, so REPLY would be dropped');
+});
+
 test('join codes are single-use and need no prior credential', async () => {
   const mint = await api('/join/new', { method: 'POST', body: JSON.stringify({ ttl: 60 }) });
   const code = mint.body.code;

@@ -19,8 +19,41 @@ const entry = (script) => ({
   hooks: [{ type: 'command', command: `node ${path.join(HOOK_DIR, script)}`, timeout: 10 }],
 });
 
+// A mesh hook from an older install method (an npm git checkout under
+// ~/.npm/_cacache/tmp/git-clone*) does not carry the mark, and once npm cleans
+// that directory the hook fails on every session start. Treat a mesh hook
+// script whose file is gone as ours, so install() replaces it.
+const deadMeshHook = (cmd) => {
+  const m = String(cmd || '').match(/^node\s+(\S+\/hooks\/session-(?:start|end)\.js)\s*$/);
+  return !!m && !fs.existsSync(m[1]);
+};
+
 const isMesh = (e) =>
-  JSON.stringify(e).includes(MARK) || (e.hooks || []).some((h) => String(h.command || '').includes(MARK));
+  JSON.stringify(e).includes(MARK) ||
+  (e.hooks || []).some((h) => String(h.command || '').includes(MARK) || deadMeshHook(h.command));
+
+/**
+ * Make sure `claude-mesh` runs from a non-interactive shell. Every hook context
+ * and REPLY line tells agents to run it, and when it is "command not found"
+ * they conclude the peer cannot be replied to. Writes ~/.local/bin/claude-mesh
+ * unless a working one is already on PATH.
+ */
+function ensureLauncher({ dryRun = false } = {}) {
+  const cli = path.resolve(__dirname, '..', 'bin', 'claude-mesh');
+  const onPath = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
+    .map((d) => path.join(d, 'claude-mesh'))
+    .find((p) => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } });
+  if (onPath) return { launcher: onPath, created: false };
+  const dir = path.join(os.homedir(), '.local', 'bin');
+  const file = path.join(dir, 'claude-mesh');
+  if (!dryRun) {
+    fs.mkdirSync(dir, { recursive: true });
+    // A dangling symlink (an uninstalled npm global) blocks the write.
+    try { if (fs.lstatSync(file).isSymbolicLink()) fs.unlinkSync(file); } catch {}
+    fs.writeFileSync(file, `#!/usr/bin/env bash\nexec "${process.execPath}" "${cli}" "$@"\n`, { mode: 0o755 });
+  }
+  return { launcher: file, created: true };
+}
 
 function install({ dryRun = false, acceptInbound = false } = {}) {
   let settings = {};
@@ -42,7 +75,8 @@ function install({ dryRun = false, acceptInbound = false } = {}) {
     if (fs.existsSync(SETTINGS)) fs.copyFileSync(SETTINGS, SETTINGS + '.mesh-backup');
     fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2) + '\n');
   }
-  return { settingsPath: SETTINGS, hooks: Object.keys(settings.hooks),
+  const launcher = dryRun ? null : ensureLauncher();
+  return { settingsPath: SETTINGS, hooks: Object.keys(settings.hooks), launcher,
            crossSessionInbound: settings.crossSessionInbound || '(unset)' };
 }
 
@@ -202,4 +236,4 @@ function applyService() {
   return { ...r, ran, ok: ran.length === (r.reload || []).length };
 }
 
-module.exports = { install, uninstall, installService, applyService, installSkill, installCodexHooks, codexHome, SETTINGS };
+module.exports = { install, uninstall, ensureLauncher, installService, applyService, installSkill, installCodexHooks, codexHome, SETTINGS };

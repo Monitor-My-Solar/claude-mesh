@@ -9,7 +9,9 @@
  */
 const cfg = require('../src/config.js').load();
 
-const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID, group: GROUP } = cfg;
+const { registry: REGISTRY, token: TOKEN, relayId: RELAY_ID } = cfg;
+const GROUP = String(cfg.group || '').toLowerCase();
+const CLI = require('path').resolve(__dirname, '..', 'bin', 'claude-mesh');
 
 let raw = '';
 process.stdin.on('data', (c) => (raw += c));
@@ -89,9 +91,16 @@ process.stdin.on('end', async () => {
     'trust the names below and never retry variations of an address that failed.',
     lines,
     '',
+    `CLI: ${CLI}  (also \`claude-mesh\` if it is on PATH; use the full path if that is "command not found")`,
     'Send:  claude-mesh send --to <group>/<name> --body "<text>" [--intent request|inform|fyi]',
-    'Ask (blocks for the answer):  claude-mesh ask --to <group>/<name> --body "<question>"',
-    'Incoming messages carry FROM / INTENT / REPLY lines; reply with the REPLY command verbatim.',
+    'Ask (blocks up to 110s for the answer):  claude-mesh ask --to <group>/<name> --body "<question>"',
+    '',
+    'Replying to a mesh message: run its REPLY command with Bash. Never answer a mesh',
+    'message with SendMessage - that bypasses the mesh and a sender blocked in `ask`',
+    'never sees it. Every mesh sender with a REPLY line CAN receive replies.',
+    'If an `ask` times out, the answer still arrives later as a message here; carry on.',
+    'When another agent owns context you need, message it yourself instead of asking',
+    'your user to relay.',
   ].join('\n');
 
   process.stdout.write(JSON.stringify({

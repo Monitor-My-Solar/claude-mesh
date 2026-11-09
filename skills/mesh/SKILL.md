@@ -81,6 +81,18 @@ Messages arrive as `<cross-session-message>` with `FROM`, `INTENT` and a
 correlation id that unblocks anyone waiting on `ask`. **Answer a
 `reply-needed` or an `ask` promptly**: someone may be blocked on it.
 
+**Never reply to a mesh message with `SendMessage`**, even though Claude Code's
+wrapper suggests it. For a peer on another machine it has no route, which is
+not the same as the peer being unable to receive replies: it can, through the
+REPLY command. For a peer on this machine it does arrive, but it bypasses the
+mesh, so a sender blocked in `ask` never sees it and times out.
+
+If your own `ask` times out, nothing is lost: the answer arrives later as a
+message in your session. Carry on, and do not re-ask.
+
+If `claude-mesh` is "command not found", use the full path from the REPLY line
+or the session-start context rather than concluding the mesh is unreachable.
+
 Reply with exactly what was asked for. If a peer asks for one line, send one
 line - it may be feeding your answer into a script.
 
