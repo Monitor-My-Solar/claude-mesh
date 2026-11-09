@@ -129,6 +129,7 @@ claude-mesh peers                                   # who is online
 claude-mesh send --to macmini/app-lead --intent request --body "..."
 claude-mesh ask  --to macmini/app-lead --body "..."  # blocks for the answer
 claude-mesh status                                   # config + relay health
+claude-mesh --version                                # this install + the registry's version
 ```
 
 Messages arrive with a small envelope so the receiver knows what is wanted:

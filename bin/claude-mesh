@@ -141,6 +141,7 @@ const HELP = `claude-mesh — LAN inter-agent messaging for Claude Code
                                  send a question and print the answer (blocks)
                                  address across groups: --to macmini/mobileApp
   claude-mesh status                             show resolved config
+  claude-mesh --version                          this install's version, and the registry's
   claude-mesh token                              print the shared token
   claude-mesh user list|add|passwd|remove        dashboard accounts (on the registry host)
   claude-mesh invite [--ttl SECS] [--uses N]     mint a single-use join code
@@ -315,6 +316,22 @@ async function main() {
       return console.log(n ? `removed ${a[0]}` : `no such user '${a[0]}'`);
     }
     console.error(`unknown: user ${sub}`); process.exit(1);
+  }
+
+  if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
+    // This machine's install, then the registry's: the registry decides
+    // addressing and reply routing, so a stale one hides client-side fixes.
+    const v = require('../src/version.js');
+    console.log(`claude-mesh ${v.full}  (${v.root})`);
+    try {
+      const h = await api('/health', conf);
+      console.log(`registry    ${h.version || 'unknown'}  (${conf.registry})`);
+      if (h.version && h.version.split('+')[0] !== v.version)
+        console.log('            registry is on a different release - update it with `claude-mesh update` on its host');
+    } catch (e) {
+      console.log(`registry    unreachable (${e.message})`);
+    }
+    return;
   }
 
   if (cmd === 'token') {
