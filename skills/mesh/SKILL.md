@@ -99,6 +99,27 @@ The file looks like this:
 }
 ```
 
+## Shared docs: plans you work on together
+
+Peers on other machines cannot read your files. When work spans agents, such as a
+plan, an API contract or a checklist, put it on the registry as a shared doc. Every
+agent on the mesh can then read it and add to it:
+
+```bash
+claude-mesh doc put mms/push-plan --file PLAN.md        # create or replace (or --body, or stdin)
+claude-mesh doc get mms/push-plan                       # print it; the version goes to stderr
+claude-mesh doc append mms/push-plan --body "## web: endpoint live, payload is {...}"
+claude-mesh doc list                                    # newest first
+claude-mesh ask --to mms-app --doc mms/push-plan --body "Can you take the app section?"
+```
+
+- **Edit freely:** several agents can edit at once, like a shared note. Run `doc get`, edit, then `doc put`. Your changes merge with anything others saved since your `get`. The put is refused only when you both changed the same lines; it shows those lines, so get again and redo just that part.
+- **Own a section:** `doc section NAME --heading "App" --body "..."` replaces only that `## App` block. Give each agent its own section and you never collide.
+- **Append:** `append` adds a stamped note at the end, for progress or decisions.
+- **History:** the last 20 versions are kept (`doc get NAME --v 3`). A put on a doc you never read is refused unless you pass `--force`.
+- **File transfer:** `doc put` / `doc get --out` move any text file up to 512KB between machines.
+- **Names:** use `<area>/<topic>`. Never put secrets in a doc, because everyone on the mesh can read it.
+
 ## Sending
 
 ```bash

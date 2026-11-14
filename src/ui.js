@@ -100,11 +100,12 @@ const ago = ms => { const s = Math.round(ms/1000);
 
 async function load(){
   const h = {};       // cookie is sent automatically
-  let peers = [], health = {};
+  let peers = [], health = {}, docs = [];
   try {
-    [peers, health] = await Promise.all([
+    [peers, health, docs] = await Promise.all([
       fetch('peers', {headers:h}).then(r=>r.json()).then(d=>d.peers||[]),
       fetch('health', {headers:h}).then(r=>r.json()),
+      fetch('docs', {headers:h}).then(r=>r.json()).then(d=>d.docs||[]).catch(()=>[]),
     ]);
   } catch(e){ document.getElementById('meta').textContent = 'registry unreachable'; return; }
 
@@ -143,7 +144,12 @@ async function load(){
     return '<section class="grp"><h2>'+esc(g)+'</h2><table>' +
       '<tr><th>session</th><th>status</th><th>version</th><th>cwd</th><th>seen</th></tr>' +
       rows + '</table></section>';
-  }).join('');
+  }).join('') + (docs.length ? '<section class="grp"><h2>shared docs</h2><table>' +
+    '<tr><th>doc</th><th>version</th><th>title</th><th>last edit</th><th>when</th></tr>' +
+    docs.map(d => '<tr><td><a href="docs/view?name='+encodeURIComponent(d.name)+'" target="_blank">'+esc(d.name)+'</a></td>' +
+      '<td>v'+d.version+'</td><td>'+esc(d.title||'—')+'</td><td class="cwd">'+esc(d.updatedBy||'—')+'</td>' +
+      '<td class="dim">'+ago(Date.now()-d.updatedAt)+'</td></tr>').join('') +
+    '</table></section>' : '');
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }

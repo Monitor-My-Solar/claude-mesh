@@ -182,6 +182,25 @@ the migration is applied; pull and re-run your tests
 
 `--intent` is one of `request`, `reply-needed`, `inform`, `fyi`.
 
+### Share a plan (or a file)
+
+Agents on different machines cannot see each other's disks, so the registry keeps
+shared markdown docs. Every agent on the mesh can read them and add to them:
+
+```bash
+claude-mesh doc put mms/push-plan --file PLAN.md
+claude-mesh doc get mms/push-plan [--out PLAN.md] [--v N]
+claude-mesh doc append mms/push-plan --body "## app: done"
+claude-mesh doc list
+claude-mesh ask --to mms-app --doc mms/push-plan --body "Review the app section?"
+```
+
+- **Simultaneous edits** work like a shared note: `get` → edit → `put` merges your changes with whatever others saved meanwhile. It refuses only when two agents changed the same lines, and shows those lines. `doc section NAME --heading X` rewrites one section, and `append` adds to the end.
+- **History:** the last 20 versions are kept.
+- **Storage:** docs are plain `.md` files in `docs/` next to the registry state, and the dashboard lists them.
+- **Limits:** text only, 512KB per doc and 500 docs (`MESH_MAX_DOC`, `MESH_MAX_DOCS`).
+- **Access:** anyone with the mesh token can read every doc.
+
 ### Teaching agents to use it
 
 `install.sh` installs a `/mesh` skill covering the conventions — naming

@@ -305,6 +305,140 @@ test('first run redirects to setup, and the API stays closed', async () => {
   assert.strictEqual(anon.status, 401, 'the API must not be open to anonymous browsers');
 });
 
+const { execFile } = require('child_process');
+const cli = (...args) => new Promise((resolve, reject) => execFile(process.execPath,
+  [path.join(__dirname, '..', 'bin', 'claude-mesh'), ...args],
+  { env: { ...process.env, MESH_REGISTRY: base, MESH_TOKEN: TOKEN, MESH_CONFIG_DIR: tmp }, timeout: 15000 },
+  (e, out, err) => (e ? reject(Object.assign(new Error(err || e.message), { out, err, code: e.code })) : resolve({ out, err }))));
+const post = (p, d) => api(p, { method: 'POST', body: JSON.stringify(d) });
+
+test('docs: put, get, list, with a normalised name and title', async () => {
+  const r = await post('/docs/put', { name: 'MMS/Push Plan.md', body: '# Push rollout\nstep 1\n', from: 'g1/alpha' });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.name, 'mms/push-plan');
+  assert.strictEqual(r.body.version, 1);
+  const g = await api('/docs?name=mms/push-plan');
+  assert.strictEqual(g.body.body, '# Push rollout\nstep 1\n');
+  assert.strictEqual(g.body.meta.title, 'Push rollout');
+  const l = await api('/docs?prefix=mms');
+  assert.ok(l.body.docs.some((d) => d.name === 'mms/push-plan'));
+  const none = await api('/docs?prefix=other');
+  assert.strictEqual(none.body.docs.length, 0);
+});
+
+test('docs: append keeps both writers and stamps each section', async () => {
+  await post('/docs/append', { name: 'mms/push-plan', body: '## web: API ready', from: 'g1/alpha' });
+  const r = await post('/docs/append', { name: 'mms/push-plan', body: '## app: UI ready', from: 'g2/beta' });
+  assert.strictEqual(r.body.version, 3);
+  const g = await api('/docs?name=mms/push-plan');
+  for (const s of ['step 1', '## web: API ready', '## app: UI ready', 'g2/beta @'])
+    assert.ok(g.body.body.includes(s), `missing ${s}`);
+});
+
+test('docs: concurrent edits merge; same-line edits are refused with the conflict', async () => {
+  // v3 is the plan plus two appended sections. Two agents both read v3.
+  const v3 = (await api('/docs?name=mms/push-plan')).body.body;
+  const a = await post('/docs/put', { name: 'mms/push-plan', ifVersion: 3, from: 'g1/alpha',
+    body: v3.replace('step 1', 'step 1 (web done)') });
+  assert.strictEqual(a.body.version, 4);
+  const b = await post('/docs/put', { name: 'mms/push-plan', ifVersion: 3, from: 'g2/beta',
+    body: v3.replace('## app: UI ready', '## app: UI shipped') });
+  assert.strictEqual(b.status, 200, JSON.stringify(b.body));
+  assert.ok(b.body.merged, 'second writer should have been merged, not refused');
+  const now = (await api('/docs?name=mms/push-plan')).body.body;
+  assert.ok(now.includes('step 1 (web done)') && now.includes('## app: UI shipped'), now);
+  const c = await post('/docs/put', { name: 'mms/push-plan', ifVersion: 3, from: 'g3/gamma',
+    body: v3.replace('step 1', 'step 1 (gamma)') });
+  assert.strictEqual(c.status, 409);
+  assert.ok(c.body.error.includes('[yours]') && c.body.conflicts.length === 1);
+  assert.ok((await api('/docs?name=mms/push-plan')).body.body.includes('(web done)'), 'refused write must not change the doc');
+  // An unread overwrite is refused; ifVersion omitted (--force) replaces.
+  const unread = await post('/docs/put', { name: 'mms/push-plan', body: 'x', ifVersion: 0, from: 'a' });
+  assert.strictEqual(unread.status, 409);
+  const ok = await post('/docs/put', { name: 'mms/push-plan', body: '# v6\n', from: 'a' });
+  assert.strictEqual(ok.body.version, 6);
+  const fresh = await post('/docs/put', { name: 'brand-new', body: 'y', ifVersion: 0, from: 'a' });
+  assert.strictEqual(fresh.status, 200, 'ifVersion 0 means "must not exist yet"');
+});
+
+test('docs: section writes from two agents never collide', async () => {
+  await post('/docs/section', { name: 'sec', heading: 'Web', body: 'web part', from: 'a' });
+  await post('/docs/section', { name: 'sec', heading: 'App', body: 'app part', from: 'b' });
+  await post('/docs/section', { name: 'sec', heading: 'Web', body: 'web part v2', from: 'a' });
+  const d = (await api('/docs?name=sec')).body.body;
+  assert.strictEqual(d, '## Web\nweb part v2\n\n## App\napp part\n');
+});
+
+test('docs: CLI get -> edit -> put merges with an edit made in between', async () => {
+  const f = path.join(tmp, 'edit.md');
+  await post('/docs/put', { name: 'cli-merge', body: '# T\none\ntwo\nthree\n', from: 'x' });
+  await cli('doc', 'get', 'cli-merge', '--out', f, '--from', 'g1/alpha');
+  await post('/docs/put', { name: 'cli-merge', body: '# T\none\ntwo\nthree (other agent)\n', from: 'g2/beta', ifVersion: 1 });
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('one', 'one (me)'));
+  const r = await cli('doc', 'put', 'cli-merge', '--file', f, '--from', 'g1/alpha');
+  assert.ok(/merged with g2\/beta/.test(r.out), r.out);
+  assert.strictEqual((await api('/docs?name=cli-merge')).body.body, '# T\none (me)\ntwo\nthree (other agent)\n');
+});
+
+test('docs: earlier versions stay readable', async () => {
+  const v1 = await api('/docs?name=mms/push-plan&v=1');
+  assert.strictEqual(v1.body.body, '# Push rollout\nstep 1\n');
+  const v6 = await api('/docs?name=mms/push-plan');
+  assert.strictEqual(v6.body.body, '# v6\n');
+});
+
+test('docs: bad names, oversize and unknown docs are rejected', async () => {
+  assert.strictEqual((await post('/docs/put', { name: '../../etc', body: 'x' })).body.name, 'etc',
+    'path traversal is flattened into a plain name');
+  assert.strictEqual((await post('/docs/put', { name: '///', body: 'x' })).status, 400);
+  assert.strictEqual((await api('/docs?name=nope')).status, 404);
+  const big = await post('/docs/put', { name: 'big', body: 'x'.repeat(600 * 1024) });
+  assert.strictEqual(big.status, 413);
+});
+
+test('docs: rm removes it from the list', async () => {
+  assert.strictEqual((await post('/docs/rm', { name: 'brand-new' })).status, 200);
+  assert.strictEqual((await api('/docs?name=brand-new')).status, 404);
+});
+
+test('docs: survive a registry restart', async () => {
+  const again = createRegistry().listen(0, '127.0.0.1');
+  await new Promise((r) => again.once('listening', r));
+  const r = await fetch(`http://127.0.0.1:${again.address().port}/docs?name=mms/push-plan`,
+    { headers: { 'X-Mesh-Token': TOKEN } }).then((x) => x.json());
+  again.close();
+  assert.strictEqual(r.body, '# v6\n');
+});
+
+test('docs: a large non-ASCII body round-trips byte for byte', async () => {
+  const body = '# Plan — ✓ → ünïcødé\n' + '— ✓ → 日本 '.repeat(12_000);
+  const r = await post('/docs/put', { name: 'utf8', body, from: 'a' });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  const g = await api('/docs?name=utf8');
+  assert.ok(g.body.body === body, 'multi-byte characters were corrupted in transit');
+});
+
+test('docs: a re-created name does not inherit the removed doc\'s history', async () => {
+  await post('/docs/put', { name: 'reuse', body: 'old one', from: 'a' });
+  await post('/docs/put', { name: 'reuse', body: 'old two', from: 'a' });
+  await post('/docs/rm', { name: 'reuse' });
+  await post('/docs/put', { name: 'reuse', body: 'new', from: 'a' });
+  assert.strictEqual((await api('/docs?name=reuse&v=1')).status, 200);   // v1 is current
+  assert.strictEqual((await api('/docs?name=reuse&v=2')).status, 404, 'old history leaked');
+});
+
+test('docs: send --doc delivers a pointer the recipient can act on', async () => {
+  await register('docrecv', { relay: 'rdoc' });
+  // Async: the registry under test runs in this process, so a sync child
+  // would deadlock waiting on a server that can no longer answer.
+  await cli('send', '--to', 'docrecv', '--doc', 'mms/push-plan', '--body', 'please review', '--from', 'g1/alpha');
+  const r = await api('/inbox?relay=rdoc&wait=1');
+  const m = (r.body.messages || []).find((x) => x.to === 'docrecv');
+  assert.ok(m, 'message not delivered');
+  assert.ok(m.body.startsWith('please review'));
+  assert.ok(m.body.includes('SHARED DOC: mms/push-plan') && m.body.includes('claude-mesh doc get mms/push-plan'), m.body);
+});
+
 (async () => {
   const server = createRegistry().listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));

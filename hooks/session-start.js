@@ -147,6 +147,13 @@ process.stdin.on('end', async () => {
     'If an `ask` times out, the answer still arrives later as a message here; carry on.',
     'When another agent owns context you need, message it yourself instead of asking',
     'your user to relay.',
+    '',
+    'Shared docs (plans across machines - peers cannot read your files): write the plan to',
+    'the registry and point peers at it: `claude-mesh doc put <area>/<topic> --file PLAN.md`,',
+    '`doc get NAME`, then edit and `doc put NAME` - edits others made meanwhile are merged in,',
+    'like a shared note. `doc section NAME --heading X --body ...` rewrites just your section;',
+    '`doc append`, `doc list`, `--doc NAME` on send/ask. Also moves text files between',
+    'machines. Never put secrets in docs. More: `claude-mesh help docs`.',
   ].join('\n');
 
   process.stdout.write(JSON.stringify({

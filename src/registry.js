@@ -14,6 +14,7 @@ const users = require('./users.js');
 const sess = require('./session.js');
 const ui = require('./ui.js');
 const { normalize: normalizeRole } = require('./role.js');
+const { createStore, MAX_DOC } = require('./docs.js');
 
 /** Best live session for a role: named, then readiest, then most recent. */
 const STATUS_RANK = { idle: 0, busy: 1, '': 2, shell: 2, waiting: 3 };
@@ -147,6 +148,9 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
   // Persist the roster and undelivered mail so a restart does not silently
   // orphan every session and drop queued messages.
+  // Shared docs live beside the state file (plans agents work on together).
+  const docs = createStore(process.env.MESH_DOCS || path.join(path.dirname(STATE_FILE), 'docs'));
+
   const persist = (() => {
     let timer = null;
     return () => {
@@ -345,6 +349,27 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         });
       }
 
+      // A doc as plain text, for reading in a browser from the dashboard.
+      if (url.pathname === '/docs/view') {
+        let r;
+        try { r = docs.get(q.get('name'), q.get('v')); }
+        catch (e) { r = { status: 500, error: `doc store error: ${e.message}` }; }
+        const b = Buffer.from(r.error ? r.error : r.body);
+        res.writeHead(r.error ? r.status : 200, { 'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Length': b.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        return res.end(b);
+      }
+
+      // Shared docs: list, or read one (?name=, optional &v= for history).
+      if (url.pathname === '/docs') {
+        const name = q.get('name');
+        if (!name) return reply(200, { docs: docs.list(q.get('prefix') || '') });
+        let r;
+        try { r = docs.get(name, q.get('v')); }
+        catch (e) { return reply(500, { error: `doc store error: ${e.message}` }); }
+        return r.error ? reply(r.status, r) : reply(200, r);
+      }
+
       // Block until a reply to `id` arrives, so a sender can ask a question and
       // wait for the answer rather than polling.
       if (url.pathname === '/await') {
@@ -445,9 +470,13 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
     if (req.method === 'POST') {
       let raw = '';
+      // Decode as one UTF-8 stream: appending raw Buffer chunks split
+      // multi-byte characters at chunk boundaries (fatal for big docs).
+      req.setEncoding('utf8');
       req.on('data', (c) => {
         raw += c;
-        if (raw.length > MAX_BODY * 2) req.destroy();
+        // Docs carry whole plans; everything else stays small.
+        if (raw.length > (url.pathname.startsWith('/docs/') ? MAX_DOC * 2 + 4096 : MAX_BODY * 2)) req.destroy();
       });
       req.on('end', () => {
         let d;
@@ -479,6 +508,23 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           wake();
           persist();
           return reply(200, { ok: true, name });
+        }
+
+        if (['/docs/put', '/docs/append', '/docs/section', '/docs/rm'].includes(url.pathname)) {
+          const by = String(d.from || 'unknown').slice(0, 120);
+          let r;
+          try {
+            r = url.pathname === '/docs/put' ? docs.put(d.name, d.body, by, d.ifVersion)
+                  : url.pathname === '/docs/append' ? docs.append(d.name, d.body, by)
+                  : url.pathname === '/docs/section' ? docs.section(d.name, d.heading, d.body, by)
+                  : docs.remove(d.name);
+          } catch (e) {
+            console.error('[registry] doc store error:', e.message);
+            return reply(500, { error: `doc store error: ${e.message}` });
+          }
+          if (r.error) return reply(r.status, r);
+          console.log(`doc ${url.pathname.slice(6)} ${r.meta.name} v${r.meta.version} by ${by}`);
+          return reply(200, { ok: true, ...r.meta });
         }
 
         if (url.pathname === '/deregister') {
