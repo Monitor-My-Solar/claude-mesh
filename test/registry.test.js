@@ -10,7 +10,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-test-'));
 process.env.MESH_STATE = path.join(tmp, 'state.json');
 process.env.MESH_USERS = path.join(tmp, 'users.json');
 process.env.MESH_TOKEN = TOKEN;
-process.env.MESH_ACK_TIMEOUT_MS = '1000';   // must be set before the require
+process.env.MESH_ACK_TIMEOUT_MS = '1000';
+process.env.MESH_DOC_NOTIFY_MS = '150';     // doc pub/sub debounce   // must be set before the require
 
 const { createRegistry } = require('../src/registry.js');
 
@@ -437,6 +438,73 @@ test('docs: send --doc delivers a pointer the recipient can act on', async () =>
   assert.ok(m, 'message not delivered');
   assert.ok(m.body.startsWith('please review'));
   assert.ok(m.body.includes('SHARED DOC: mms/push-plan') && m.body.includes('claude-mesh doc get mms/push-plan'), m.body);
+});
+
+// --- doc pub/sub -----------------------------------------------------------
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const drain = async (relay) => (await api(`/inbox?relay=${relay}&wait=1`)).body.messages || [];
+const docMsgs = (msgs, doc) => msgs.filter((m) => m.intent === 'doc-update' && (!doc || m.body.includes(doc)));
+
+test('pub/sub: an edit pings the other participant with the diff, not the editor', async () => {
+  await register('webagent', { group: 'srv', relay: 'rweb', role: { role: 'ps-web', owns: 'backend' } });
+  await register('appagent', { group: 'mac', relay: 'rapp', role: { role: 'ps-app', owns: 'mobile' } });
+  const w = await post('/docs/put', { name: 'ps/plan', from: 'srv/webagent', body: '# Plan\n\n## Web\ntodo\n\n## App\ntodo\n' });
+  assert.strictEqual(w.body.subscribed, true, 'writer should be auto-subscribed');
+  const a = await post('/docs/section', { name: 'ps/plan', from: 'mac/appagent', heading: 'App', body: 'screen built' });
+  assert.deepStrictEqual(a.body.notifying, ['role:ps-web']);
+  await sleepMs(400);
+  const web = docMsgs(await drain('rweb'), 'ps/plan');
+  assert.strictEqual(web.length, 1, 'web should get exactly one notice');
+  assert.ok(web[0].body.includes('SHARED DOC UPDATED: ps/plan') && web[0].body.includes('+ screen built'), web[0].body);
+  assert.strictEqual(web[0].fromAddr, 'mac/appagent', 'notice is replyable to the editor');
+  assert.strictEqual(docMsgs(await drain('rapp'), 'ps/plan').length, 0, 'the editor is never pinged about its own edit');
+});
+
+test('pub/sub: a burst of edits becomes one message', async () => {
+  for (const b of ['one', 'two', 'three'])
+    await post('/docs/section', { name: 'ps/plan', from: 'srv/webagent', heading: 'Web', body: b });
+  await sleepMs(400);
+  const app = docMsgs(await drain('rapp'), 'ps/plan');
+  assert.strictEqual(app.length, 1, `expected 1 coalesced notice, got ${app.length}`);
+  assert.ok(app[0].body.includes('+ three') && !app[0].body.includes('+ one'), app[0].body);
+});
+
+test('pub/sub: send --doc subscribes the recipient; folder subs match', async () => {
+  await register('opsagent', { group: 'srv', relay: 'rops' });
+  await post('/docs/put', { name: 'ps/other', from: 'srv/webagent', body: 'x' });
+  await api('/send', { method: 'POST', body: JSON.stringify({ to: 'opsagent', from: 'srv/webagent', body: 'see doc', doc: 'ps/other' }) });
+  const sub = await post('/docs/sub', { name: 'ps/', from: 'srv/opsagent' });
+  assert.strictEqual(sub.body.key, 'session:opsagent');
+  const subs = await api('/docs/subs?who=srv/opsagent');
+  assert.deepStrictEqual(subs.body.subs.map((x) => x.pattern).sort(), ['ps/', 'ps/other']);
+  await drain('rops');
+  await post('/docs/put', { name: 'ps/third', from: 'srv/webagent', body: 'new doc' });
+  await sleepMs(400);
+  assert.strictEqual(docMsgs(await drain('rops'), 'ps/third').length, 1, 'folder subscription missed a new doc');
+  const un = await post('/docs/unsub', { name: 'ps/', from: 'srv/opsagent' });
+  assert.strictEqual(un.body.changed, true);
+});
+
+test('pub/sub: a role that is offline is told when it comes back', async () => {
+  await api('/deregister', { method: 'POST', body: JSON.stringify({ name: 'appagent' }) });
+  await post('/docs/append', { name: 'ps/plan', from: 'srv/webagent', body: 'while you were out' });
+  await sleepMs(400);
+  assert.strictEqual(docMsgs(await drain('rapp')).length, 0);
+  await register('appagent2', { group: 'mac', relay: 'rapp', role: { role: 'ps-app', owns: 'mobile' } });
+  const back = docMsgs(await drain('rapp'));
+  assert.strictEqual(back.length, 1);
+  assert.ok(back[0].to === 'appagent2' && back[0].body.includes('while role ps-app was offline') &&
+            back[0].body.includes('ps/plan'), back[0].body);
+});
+
+test('pub/sub: subscriptions survive a registry restart', async () => {
+  await sleepMs(1200);   // let the debounced state save land
+  const again = createRegistry().listen(0, '127.0.0.1');
+  await new Promise((r) => again.once('listening', r));
+  const r = await fetch(`http://127.0.0.1:${again.address().port}/docs/subs?name=ps/plan`,
+    { headers: { 'X-Mesh-Token': TOKEN } }).then((x) => x.json());
+  again.close();
+  assert.deepStrictEqual(r.subs.map((x) => x.key).sort(), ['role:ps-app', 'role:ps-web']);
 });
 
 (async () => {

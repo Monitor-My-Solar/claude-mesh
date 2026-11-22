@@ -154,6 +154,10 @@ process.stdin.on('end', async () => {
     'like a shared note. `doc section NAME --heading X --body ...` rewrites just your section;',
     '`doc append`, `doc list`, `--doc NAME` on send/ask. Also moves text files between',
     'machines. Never put secrets in docs. More: `claude-mesh help docs`.',
+    'Docs are pub/sub: writing one (or being sent it with --doc) subscribes this repo\'s role, and',
+    'every subscriber is pinged with the diff when someone else edits it. So when you update a',
+    'shared doc you do NOT also need to message the other agents; when you get a SHARED DOC',
+    'UPDATED notice, check whether it changes your work and act on it.',
   ].join('\n');
 
   process.stdout.write(JSON.stringify({

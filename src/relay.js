@@ -181,7 +181,9 @@ function envelopeFor(m) {
          ...(m.intent === 'reply-needed'
            ? ['The sender is probably blocked waiting for this answer: reply before doing other work.']
            : [])]
-      : ['REPLY: (sent from a plain shell, not an agent session - there is nobody to reply to)']),
+      : [m.intent === 'doc-update'
+          ? 'REPLY: (automatic shared-doc notice from the mesh - no reply needed)'
+          : 'REPLY: (sent from a plain shell, not an agent session - there is nobody to reply to)']),
   ].join('\n');
   return `${head}\n\n${m.body}`;
 }

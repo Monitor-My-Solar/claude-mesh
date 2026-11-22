@@ -106,4 +106,29 @@ function setSection(doc, heading, body) {
     .replace(/\n*$/, '\n');
 }
 
-module.exports = { merge3, setSection, lcsMatch };
+/**
+ * A short +/- summary of what changed between two versions, for update
+ * notifications: only changed lines, with "@@ line N" markers, capped.
+ */
+function summarizeDiff(before, after, maxLines = 40) {
+  const A = String(before ?? '').split('\n'), B = String(after ?? '').split('\n');
+  const m = lcsMatch(A, B);
+  if (!m) return { text: '(change too large to summarise)', added: 0, removed: 0 };
+  const out = [];
+  let added = 0, removed = 0, i = 0, j = 0, lastOut = -2;
+  const emit = (line, at) => {
+    if (at !== lastOut + 1) out.push(`@@ line ${at + 1}`);
+    out.push(line.length > 200 ? line.slice(0, 200) + ` ... (+${line.length - 200} chars)` : line);
+    lastOut = at;
+  };
+  while (i < A.length || j < B.length) {
+    if (i < A.length && m[i] === j) { i++; j++; continue; }
+    if (i < A.length && (m[i] === -1 || j >= B.length)) { removed++; emit(`- ${A[i]}`, j); lastOut = j - 1; i++; continue; }
+    added++; emit(`+ ${B[j]}`, j); j++;
+  }
+  const extra = out.length - maxLines;
+  const text = (extra > 0 ? [...out.slice(0, maxLines), `... (${extra} more lines of changes)`] : out).join('\n');
+  return { text, added, removed };
+}
+
+module.exports = { merge3, setSection, lcsMatch, summarizeDiff };

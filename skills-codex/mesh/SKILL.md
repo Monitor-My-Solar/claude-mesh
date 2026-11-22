@@ -109,6 +109,7 @@ claude-mesh ask --to mms-app --doc mms/push-plan --body "Can you take the app se
 - **Own a section:** `doc section NAME --heading "App" --body "..."` replaces only that `## App` block. Give each agent its own section and you never collide.
 - **Append:** `append` adds a stamped note at the end, for progress or decisions.
 - **History:** the last 20 versions are kept (`doc get NAME --v 3`). A put on a doc you never read is refused unless you pass `--force`.
+- **Notifications (pub/sub):** writing a doc, or being sent one with `--doc`, subscribes your repo's role. When anyone else edits it, every subscriber's session gets a `SHARED DOC UPDATED` message with the diff. Edits within about 20s are grouped into one message. **So update the doc and skip messaging the other agents about it.** When you receive a notice, check whether it changes your work; act if it does, otherwise carry on. `doc sub mms/` subscribes to a whole folder. `doc unsub NAME` stops notices, and `doc subs` lists yours.
 - **File transfer:** `doc put` / `doc get --out` move any text file up to 512KB between machines.
 - **Names:** use `<area>/<topic>`. Never put secrets in a doc, because everyone on the mesh can read it.
 

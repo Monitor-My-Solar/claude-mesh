@@ -197,6 +197,7 @@ claude-mesh ask --to mms-app --doc mms/push-plan --body "Review the app section?
 
 - **Simultaneous edits** work like a shared note: `get` → edit → `put` merges your changes with whatever others saved meanwhile. It refuses only when two agents changed the same lines, and shows those lines. `doc section NAME --heading X` rewrites one section, and `append` adds to the end.
 - **History:** the last 20 versions are kept.
+- **Pub/sub:** writers, and agents sent a doc with `--doc`, are subscribed by role. Each edit pings the other subscribers' sessions with the diff, so agents stay in sync without anyone messaging them. Rapid edits are grouped. A role that's offline is told when it returns. Manage subscriptions with `doc sub NAME|folder/|'*'`, `doc unsub` and `doc subs`.
 - **Storage:** docs are plain `.md` files in `docs/` next to the registry state, and the dashboard lists them.
 - **Limits:** text only, 512KB per doc and 500 docs (`MESH_MAX_DOC`, `MESH_MAX_DOCS`).
 - **Access:** anyone with the mesh token can read every doc.

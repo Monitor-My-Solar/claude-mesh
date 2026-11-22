@@ -14,7 +14,17 @@ const users = require('./users.js');
 const sess = require('./session.js');
 const ui = require('./ui.js');
 const { normalize: normalizeRole } = require('./role.js');
-const { createStore, MAX_DOC } = require('./docs.js');
+const { createStore, slugName, MAX_DOC } = require('./docs.js');
+const { createDocSubs } = require('./docsub.js');
+
+/** A subscription pattern: a doc name, a folder prefix ("mms/"), or "*". */
+function subPattern(raw) {
+  const v = String(raw || '').trim();
+  if (v === '*' || v === '/*') return '*';
+  const folder = /\/\*?$/.test(v);
+  const n = slugName(v.replace(/\/\*?$/, ''));
+  return n ? (folder ? n + '/' : n) : '';
+}
 
 /** Best live session for a role: named, then readiest, then most recent. */
 const STATUS_RANK = { idle: 0, busy: 1, '': 2, shell: 2, waiting: 3 };
@@ -150,6 +160,28 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
   // orphan every session and drop queued messages.
   // Shared docs live beside the state file (plans agents work on together).
   const docs = createStore(process.env.MESH_DOCS || path.join(path.dirname(STATE_FILE), 'docs'));
+  const resolveAddr = (addr) => {
+    const r = resolveTarget(peers, String(addr || ''), '', roles);
+    return r.error ? null : r.name;
+  };
+  /** Bank a system-made message (doc notifications) for msg.to. */
+  const enqueue = (m) => {
+    const q = bank.get(m.to) || [];
+    if (q.length >= MAX_BANK) return;
+    const fromName = m.fromAddr ? resolveAddr(m.fromAddr) : null;
+    q.push({
+      id: randomUUID().slice(0, 12), group: 'mesh', re: '', priority: 'next', ts: Date.now(),
+      toRole: peers.get(m.to)?.role || null,
+      fromRole: fromName ? peers.get(fromName)?.role?.role || null : null,
+      ...m,
+      fromAddr: fromName ? `${peers.get(fromName).group}/${fromName}` : '',
+    });
+    bank.set(m.to, q);
+    wake();
+    persist();
+  };
+  // Pub/sub: writers and --doc recipients are pinged when a doc changes.
+  const docSubs = createDocSubs({ peers, resolve: resolveAddr, enqueue, persist: () => persist() });
 
   const persist = (() => {
     let timer = null;
@@ -165,6 +197,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             savedAt: Date.now(),
             peers: [...peers.values()],
             roles: [...roles.entries()],
+            docSubs: docSubs.toJSON(),
             bank: [...bank.entries()],
             inflight: [...inflight.entries()],
           }), { mode: 0o600 });
@@ -188,6 +221,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
       if (p.seen > cutoff) { peers.set(p.name, p); kept++; }
     }
     for (const [k, v] of d.roles || []) if (v && v.role) roles.set(k, v);
+    docSubs.restore(d.docSubs);
     for (const [k, v] of d.bank || []) if (Array.isArray(v) && v.length) bank.set(k, v);
     // Anything in flight when we stopped was never acked: put it back.
     for (const [, rec] of d.inflight || []) {
@@ -200,6 +234,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
   const prune = () => {
     const cutoff = Date.now() - STALE_MS;
+    docSubs.prune();
     // Forget roles nobody has held for a month (a repo renamed or retired).
     for (const [r, v] of roles) if (v.lastSeen < Date.now() - 30 * 86_400_000) roles.delete(r);
     // A parked reply nobody collected (its waiter vanished between hops).
@@ -360,6 +395,14 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
         return res.end(b);
       }
 
+      // Who hears about which docs: ?who=ADDR (that session's subs) or ?name=DOC.
+      if (url.pathname === '/docs/subs') {
+        const who = q.get('who');
+        const keys = who ? docSubs.writerKeys(who) : null;
+        if (who && !keys.size) return reply(404, { error: `'${who}' is not a registered session` });
+        return reply(200, { subs: docSubs.list({ key: keys, doc: q.get('name') ? slugName(q.get('name')) : undefined }) });
+      }
+
       // Shared docs: list, or read one (?name=, optional &v= for history).
       if (url.pathname === '/docs') {
         const name = q.get('name');
@@ -505,6 +548,7 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
             seen:   Date.now(),
           });
           noteRole(peers.get(name));
+          docSubs.onRegister(peers.get(name));
           wake();
           persist();
           return reply(200, { ok: true, name });
@@ -512,19 +556,47 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
 
         if (['/docs/put', '/docs/append', '/docs/section', '/docs/rm'].includes(url.pathname)) {
           const by = String(d.from || 'unknown').slice(0, 120);
-          let r;
+          const op = url.pathname.slice(6);
+          let r, prev = '', after = '';
           try {
-            r = url.pathname === '/docs/put' ? docs.put(d.name, d.body, by, d.ifVersion)
-                  : url.pathname === '/docs/append' ? docs.append(d.name, d.body, by)
-                  : url.pathname === '/docs/section' ? docs.section(d.name, d.heading, d.body, by)
-                  : docs.remove(d.name);
+            const before = docs.get(d.name);
+            prev = before.error ? '' : before.body;
+            r = op === 'put' ? docs.put(d.name, d.body, by, d.ifVersion)
+              : op === 'append' ? docs.append(d.name, d.body, by)
+              : op === 'section' ? docs.section(d.name, d.heading, d.body, by)
+              : docs.remove(d.name);
+            if (!r.error && op !== 'rm') after = docs.get(r.meta.name).body;
           } catch (e) {
             console.error('[registry] doc store error:', e.message);
             return reply(500, { error: `doc store error: ${e.message}` });
           }
           if (r.error) return reply(r.status, r);
-          console.log(`doc ${url.pathname.slice(6)} ${r.meta.name} v${r.meta.version} by ${by}`);
-          return reply(200, { ok: true, ...r.meta });
+          console.log(`doc ${op} ${r.meta.name} v${r.meta.version} by ${by}`);
+          // Writing a doc makes you a participant: you hear about others' edits.
+          let subscribed = false;
+          if (op !== 'rm' && !d.noSub) {
+            const key = docSubs.keyFor(by);
+            if (key) {
+              const res = docSubs.subscribe(r.meta.name, key, { auto: true });
+              subscribed = res === true || docSubs.list({ key: new Set([key]), doc: r.meta.name }).length > 0;
+            }
+          }
+          docSubs.changed(r.meta.name, { prev, body: after, version: r.meta.version, by, byAddr: by,
+                                         op: r.meta.merged ? 'merged edit' : op, removed: op === 'rm' });
+          const notifying = op === 'rm' ? [] : [...docSubs.subscribersOf(r.meta.name).keys()]
+            .filter((k) => !docSubs.writerKeys(by).has(k));
+          return reply(200, { ok: true, ...r.meta, subscribed, notifying });
+        }
+
+        if (url.pathname === '/docs/sub' || url.pathname === '/docs/unsub') {
+          const pattern = subPattern(d.name);
+          if (!pattern) return reply(400, { error: 'give a doc name, a folder like mms/, or *' });
+          const key = docSubs.keyFor(d.who || d.from, d.scope);
+          if (!key) return reply(404, { error: `'${d.who || d.from}' is not a registered session, so it cannot ` +
+                                               'subscribe - run this from inside an agent session' });
+          const res = url.pathname === '/docs/sub' ? docSubs.subscribe(pattern, key) : docSubs.unsubscribe(pattern, key);
+          if (res === 'full') return reply(507, { error: `${pattern} already has the maximum number of subscribers` });
+          return reply(200, { ok: true, pattern, key, changed: res === true });
         }
 
         if (url.pathname === '/deregister') {
@@ -622,6 +694,8 @@ function createRegistry({ token = process.env.MESH_TOKEN || '', allowInsecure = 
           // was a plain send), it is banked and arrives as a normal message.
           // Always parked by id too, so a waiter between two polling hops
           // still collects it (expired by prune() if nobody does).
+          // Pointing someone at a doc makes them a participant in it.
+          if (d.doc) { const n = slugName(d.doc); const k = docSubs.keyFor(target); if (n && k) docSubs.subscribe(n, k, { auto: true }); }
           const toWaiter = !!(msg.re && awaiting.get(msg.re));
           if (msg.re) replies.set(msg.re, msg);
           if (!toWaiter) { qq.push(msg); bank.set(target, qq); }

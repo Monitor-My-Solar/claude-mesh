@@ -203,6 +203,8 @@ plan on the registry instead and point the other agent at it:
   claude-mesh doc append mms/push-plan --body "## web: API done, contract is ..."
   claude-mesh doc section mms/push-plan --heading "App" --body "..."   replace just your section
   claude-mesh doc list [mms]                            what exists, newest first
+  claude-mesh doc sub mms/push-plan | mms/ | '*'        get pinged when others edit it
+  claude-mesh doc unsub NAME        claude-mesh doc subs [NAME]
   claude-mesh doc rm mms/push-plan
   claude-mesh ask --to mms-app --doc mms/push-plan --body "Review the app section?"
 
@@ -214,6 +216,15 @@ Several agents editing at once (like a shared note - nobody's edit is lost):
     writers never collide. append adds a stamped block at the end.
   - put on an existing doc you never read is refused (pass --force to overwrite).
   - The last 20 versions are kept: claude-mesh doc get NAME --v 3
+
+Notifications (pub/sub) - edit the doc, and the others hear about it:
+  - Writing a doc subscribes you to it; so does being sent it with --doc.
+  - When someone else edits it, each subscriber's session gets a message with
+    the diff (a burst of edits within ~20s becomes one message). So: update the
+    doc and you do NOT also need to message the other agents about it.
+  - Subscriptions follow your repo's role (role mms-app), so new sessions in
+    that repo inherit them; a role offline at the time is told when it returns.
+  - --no-sub on put/append/section writes without subscribing you.
 
 Also works as file transfer for any text file (configs, logs, diffs), up to 512KB.
 Names: lowercase, '/' for folders (mms/push-plan). Docs are visible to everyone on
@@ -674,7 +685,13 @@ async function main() {
     const sub = rest[0] && !rest[0].startsWith('--') ? rest[0] : 'list';
     const name = rest[1] && !rest[1].startsWith('--') ? rest[1] : '';
     const from = arg(rest, '--from') || selfAddress(conf) || `${conf.group}/cli`;
-    const post = (p, body) => api(p, conf, { method: 'POST', body: JSON.stringify({ from, name, ...body }) });
+    const post = (p, body) => api(p, conf, { method: 'POST',
+      body: JSON.stringify({ from, name, ...(has(rest, '--no-sub') ? { noSub: true } : {}), ...body }) });
+    // After a write: who will hear about it (pub/sub), so the agent knows it
+    // does not also need to message them.
+    const told = (m) => (m.notifying?.length
+      ? `\n  subscribers will be notified in ~20s: ${m.notifying.join(', ')} - no need to message them as well`
+      : '\n  nobody else is subscribed yet; point an agent at it with: claude-mesh send --to <role> --doc ' + m.name + ' --body "..."');
     const need = () => { if (!name) { console.error(`usage: claude-mesh doc ${sub} NAME ...`); process.exit(1); } };
     const ago = (t) => { const m = Math.round((Date.now() - t) / 60_000); return m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
     try {
@@ -715,14 +732,14 @@ async function main() {
         seenSet(conf, from, m.name, m.version);
         return console.log(`${m.version === 1 ? 'created' : 'updated'} ${m.name} v${m.version} (${m.size}B)` +
                            `${m.merged ? `, merged with ${m.mergedWith}'s edits made meanwhile` : ''}. ` +
-                           `Others read it with: claude-mesh doc get ${m.name}`);
+                           `Others read it with: claude-mesh doc get ${m.name}` + told(m));
       }
       if (sub === 'append' || sub === 'add') {
         need();
         const body = await docBody(rest);
         if (!body.trim()) { console.error('nothing to append: give --body TEXT, --file F, or pipe it in'); process.exit(1); }
         const m = await post('/docs/append', { body });
-        return console.log(`appended to ${m.name}, now v${m.version} (${m.size}B)`);
+        return console.log(`appended to ${m.name}, now v${m.version} (${m.size}B)` + told(m));
       }
       if (sub === 'section') {
         need();
@@ -730,7 +747,24 @@ async function main() {
         const body = await docBody(rest);
         const m = await post('/docs/section', { heading, body });
         seenSet(conf, from, m.name, m.version);
-        return console.log(`set section "${heading}" in ${m.name}, now v${m.version} (${m.size}B)`);
+        return console.log(`set section "${heading}" in ${m.name}, now v${m.version} (${m.size}B)` + told(m));
+      }
+      if (sub === 'sub' || sub === 'subscribe' || sub === 'unsub' || sub === 'unsubscribe') {
+        need();
+        const off = sub.startsWith('un');
+        const r = await post(off ? '/docs/unsub' : '/docs/sub', { who: arg(rest, '--who', ''), scope: has(rest, '--session') ? 'session' : '' });
+        const who = r.key.replace(/^role:/, 'role ').replace(/^session:/, 'session ');
+        return console.log(off
+          ? (r.changed ? `${who} unsubscribed from ${r.pattern}` : `${who} was not subscribed to ${r.pattern}`)
+          : `${who} ${r.changed ? 'subscribed to' : 'was already subscribed to'} ${r.pattern} - ` +
+            'its sessions get a message whenever someone else edits it');
+      }
+      if (sub === 'subs' || sub === 'subscriptions') {
+        const q = name ? `name=${encodeURIComponent(name)}` : `who=${encodeURIComponent(arg(rest, '--who', from))}`;
+        const { subs } = await api(`/docs/subs?${q}`, conf);
+        if (!subs.length) return console.log(name ? `(nobody is subscribed to ${name})` : '(no subscriptions - you are subscribed automatically to docs you write)');
+        for (const x of subs) console.log(`  ${x.pattern}  <- ${x.key}`);
+        return;
       }
       if (sub === 'rm' || sub === 'delete') {
         need();
@@ -765,6 +799,7 @@ async function main() {
         to, body,
         from:    arg(rest, '--from', selfName || `${conf.group}/cli`),
         intent:  arg(rest, '--intent', 'inform'),
+        doc:     arg(rest, '--doc', ''),
         re:      arg(rest, '--re', ''),
         group:   conf.group,                    // sender's group
         toGroup: arg(rest, '--group', ''),      // optional recipient group
@@ -808,7 +843,7 @@ async function main() {
       j = await api('/send', conf, {
         method: 'POST',
         body: JSON.stringify({
-          to, body, from: selfName || `${conf.group}/cli`, intent: 'reply-needed',
+          to, body, from: selfName || `${conf.group}/cli`, intent: 'reply-needed', doc: arg(rest, '--doc', ''),
           group: conf.group, toGroup: arg(rest, '--group', ''),
           priority: 'immediate',
         }),
